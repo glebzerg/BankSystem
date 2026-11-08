@@ -1,3 +1,4 @@
+import uuid
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from enum import Enum
@@ -7,6 +8,14 @@ class AccountStatus(Enum):
     ACTIVE = "active"
     FROZEN = "frozen"
     CLOSED = "closed"
+
+
+class Currency(Enum):
+    RUB = "RUB"
+    USD = "USD"
+    EUR = "EUR"
+    KZT = "KZT"
+    CNY = "CNY"
 
 
 class AbstractAccount(ABC):
@@ -55,3 +64,46 @@ class AbstractAccount(ABC):
     @abstractmethod
     def get_account_info(self) -> dict:
         """Вернуть сведения о счёте."""
+
+
+class BankAccount(AbstractAccount):
+    """Обычный банковский счёт."""
+
+    def __init__(
+        self,
+        owner: str,
+        currency: Currency = Currency.RUB,
+        balance: Decimal = Decimal("0"),
+        status: AccountStatus = AccountStatus.ACTIVE,
+        account_id: str | None = None,
+    ):
+        if account_id is None:
+            account_id = self._generate_id()
+
+        super().__init__(
+            account_id=account_id,
+            owner=owner,
+            balance=balance,
+            status=status,
+        )
+        self._currency = currency
+
+    @staticmethod
+    def _generate_id() -> str:
+        number = uuid.uuid4().int % 10**12
+        return f"{number:012d}"
+
+    @property
+    def currency(self) -> Currency:
+        return self._currency
+
+    # --- Временные заглушки, реализуем в частях 3 и 4 ---
+
+    def deposit(self, amount: Decimal) -> None:
+        pass
+
+    def withdraw(self, amount: Decimal) -> None:
+        pass
+
+    def get_account_info(self) -> dict:
+        return {}
