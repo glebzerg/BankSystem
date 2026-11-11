@@ -227,3 +227,18 @@ class BankAccount(AbstractAccount):
             f"Баланс: {self._balance:.2f} "
             f"{self._currency.value}"
         )
+
+
+class SavingsAccount(BankAccount):
+    """Накопительный счёт."""
+    pass
+
+
+class PremiumAccount(BankAccount):
+    """Премиальный счёт."""
+    pass
+
+
+class InvestmentAccount(BankAccount):
+    """Инвестиционный счёт."""
+    pass
