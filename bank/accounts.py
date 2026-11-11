@@ -230,8 +230,80 @@ class BankAccount(AbstractAccount):
 
 
 class SavingsAccount(BankAccount):
-    """Накопительный счёт."""
-    pass
+    """Накопительный счёт с минимальным остатком."""
+
+    def __init__(
+        self,
+        owner: str,
+        currency: Currency = Currency.RUB,
+        balance: Decimal = Decimal("0"),
+        status: AccountStatus = AccountStatus.ACTIVE,
+        account_id: str | None = None,
+        *,
+        min_balance: Decimal = Decimal("0"),
+        monthly_interest_rate: Decimal = Decimal("0.01"),
+    ):
+        super().__init__(
+            owner=owner,
+            currency=currency,
+            balance=balance,
+            status=status,
+            account_id=account_id,
+        )
+
+        if (
+            not isinstance(min_balance, Decimal)
+            or not min_balance.is_finite()
+            or min_balance < 0
+        ):
+            raise InvalidOperationError(
+                "Минимальный остаток должен быть конечным Decimal >= 0"
+            )
+
+        if (
+            not isinstance(monthly_interest_rate, Decimal)
+            or not monthly_interest_rate.is_finite()
+            or monthly_interest_rate < 0
+        ):
+            raise InvalidOperationError(
+                "Месячная ставка должна быть конечным Decimal >= 0"
+            )
+
+        if balance < min_balance:
+            raise InvalidOperationError(
+                "Начальный баланс ниже минимального остатка"
+            )
+
+        self._min_balance = min_balance
+        self._monthly_interest_rate = monthly_interest_rate
+
+    @property
+    def min_balance(self) -> Decimal:
+        return self._min_balance
+
+    @property
+    def monthly_interest_rate(self) -> Decimal:
+        return self._monthly_interest_rate
+
+    def withdraw(self, amount: Decimal) -> None:
+        self._ensure_active()
+        self._validate_amount(amount)
+
+        if self._balance - amount < self._min_balance:
+            raise InsufficientFundsError(
+                "После снятия останется меньше минимального остатка"
+            )
+
+        super().withdraw(amount)
+
+    def apply_monthly_interest(self) -> Decimal:
+        """Начислить доход за месяц и вернуть начисленную сумму."""
+        self._ensure_active()
+
+        interest = self._balance * self._monthly_interest_rate
+        self._balance += interest
+
+        return interest
 
 
 class PremiumAccount(BankAccount):
