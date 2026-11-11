@@ -3,6 +3,13 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from enum import Enum
 
+from .exceptions import (
+    AccountClosedError,
+    AccountFrozenError,
+    InsufficientFundsError,
+    InvalidOperationError,
+)
+
 
 class AccountStatus(Enum):
     ACTIVE = "active"
@@ -33,8 +40,6 @@ class AbstractAccount(ABC):
         self._balance = balance
         self._status = status
 
-    # --- Доступ только на чтение ---
-
     @property
     def account_id(self) -> str:
         return self._account_id
@@ -51,15 +56,13 @@ class AbstractAccount(ABC):
     def status(self) -> AccountStatus:
         return self._status
 
-    # --- Контракт: наследники обязаны реализовать ---
-
     @abstractmethod
     def deposit(self, amount: Decimal) -> None:
-        """Пополнить счёт на amount."""
+        """Пополнить счёт на указанную сумму."""
 
     @abstractmethod
     def withdraw(self, amount: Decimal) -> None:
-        """Снять со счёта amount."""
+        """Снять со счёта указанную сумму."""
 
     @abstractmethod
     def get_account_info(self) -> dict:
@@ -77,8 +80,57 @@ class BankAccount(AbstractAccount):
         status: AccountStatus = AccountStatus.ACTIVE,
         account_id: str | None = None,
     ):
+        if not isinstance(owner, str):
+            raise InvalidOperationError(
+                "Имя владельца должно быть строкой"
+            )
+
+        owner = owner.strip()
+
+        if not owner:
+            raise InvalidOperationError(
+                "Имя владельца не должно быть пустым"
+            )
+
+        if not isinstance(currency, Currency):
+            raise InvalidOperationError(
+                "Валюта должна быть элементом Currency"
+            )
+
+        if not isinstance(status, AccountStatus):
+            raise InvalidOperationError(
+                "Статус должен быть элементом AccountStatus"
+            )
+
+        if not isinstance(balance, Decimal):
+            raise InvalidOperationError(
+                "Начальный баланс должен иметь тип Decimal"
+            )
+
+        if not balance.is_finite():
+            raise InvalidOperationError(
+                "Начальный баланс должен быть конечным числом"
+            )
+
+        if balance < Decimal("0"):
+            raise InvalidOperationError(
+                "Начальный баланс не может быть отрицательным"
+            )
+
         if account_id is None:
             account_id = self._generate_id()
+        else:
+            if not isinstance(account_id, str):
+                raise InvalidOperationError(
+                    "Номер счёта должен быть строкой"
+                )
+
+            account_id = account_id.strip()
+
+            if not account_id:
+                raise InvalidOperationError(
+                    "Номер счёта не должен быть пустым"
+                )
 
         super().__init__(
             account_id=account_id,
@@ -86,10 +138,12 @@ class BankAccount(AbstractAccount):
             balance=balance,
             status=status,
         )
+
         self._currency = currency
 
     @staticmethod
     def _generate_id() -> str:
+        """Создать 12-значный номер на основе UUID."""
         number = uuid.uuid4().int % 10**12
         return f"{number:012d}"
 
@@ -97,13 +151,79 @@ class BankAccount(AbstractAccount):
     def currency(self) -> Currency:
         return self._currency
 
-    # --- Временные заглушки, реализуем в частях 3 и 4 ---
+    @staticmethod
+    def _validate_amount(amount: Decimal) -> None:
+        """Проверить сумму пополнения или снятия."""
+        if not isinstance(amount, Decimal):
+            raise InvalidOperationError(
+                "Сумма операции должна иметь тип Decimal"
+            )
+
+        if not amount.is_finite():
+            raise InvalidOperationError(
+                "Сумма операции должна быть конечным числом"
+            )
+
+        if amount <= Decimal("0"):
+            raise InvalidOperationError(
+                "Сумма операции должна быть больше нуля"
+            )
+
+    def _ensure_active(self) -> None:
+        """Проверить, что операции по счёту разрешены."""
+        if self._status is AccountStatus.FROZEN:
+            raise AccountFrozenError("Счёт заморожен")
+
+        if self._status is AccountStatus.CLOSED:
+            raise AccountClosedError("Счёт закрыт")
+
+        if self._status is not AccountStatus.ACTIVE:
+            raise InvalidOperationError(
+                "Неизвестный статус счёта"
+            )
 
     def deposit(self, amount: Decimal) -> None:
-        pass
+        """Пополнить активный счёт."""
+        self._ensure_active()
+        self._validate_amount(amount)
+
+        self._balance += amount
 
     def withdraw(self, amount: Decimal) -> None:
-        pass
+        """Снять деньги с активного счёта."""
+        self._ensure_active()
+        self._validate_amount(amount)
+
+        if amount > self._balance:
+            raise InsufficientFundsError(
+                "На счёте недостаточно средств"
+            )
+
+        self._balance -= amount
 
     def get_account_info(self) -> dict:
-        return {}
+        """Вернуть сведения о счёте."""
+        return {
+            "account_type": type(self).__name__,
+            "account_id": self._account_id,
+            "owner": self._owner,
+            "balance": self._balance,
+            "currency": self._currency.value,
+            "status": self._status.value,
+        }
+
+    def __str__(self) -> str:
+        status_labels = {
+            AccountStatus.ACTIVE: "активный",
+            AccountStatus.FROZEN: "замороженный",
+            AccountStatus.CLOSED: "закрытый",
+        }
+
+        return (
+            f"{type(self).__name__} | "
+            f"Клиент: {self._owner} | "
+            f"Счёт: ****{self._account_id[-4:]} | "
+            f"Статус: {status_labels[self._status]} | "
+            f"Баланс: {self._balance:.2f} "
+            f"{self._currency.value}"
+        )
