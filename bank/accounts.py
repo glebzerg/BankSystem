@@ -307,8 +307,89 @@ class SavingsAccount(BankAccount):
 
 
 class PremiumAccount(BankAccount):
-    """Премиальный счёт."""
-    pass
+    """Премиальный счёт с овердрафтом и комиссией за снятие."""
+
+    def __init__(
+        self,
+        owner: str,
+        currency: Currency = Currency.RUB,
+        balance: Decimal = Decimal("0"),
+        status: AccountStatus = AccountStatus.ACTIVE,
+        account_id: str | None = None,
+        *,
+        withdrawal_limit: Decimal = Decimal("100000"),
+        overdraft_limit: Decimal = Decimal("10000"),
+        fixed_fee: Decimal = Decimal("50"),
+    ):
+        super().__init__(
+            owner=owner,
+            currency=currency,
+            balance=balance,
+            status=status,
+            account_id=account_id,
+        )
+
+        if (
+            not isinstance(withdrawal_limit, Decimal)
+            or not withdrawal_limit.is_finite()
+            or withdrawal_limit <= 0
+        ):
+            raise InvalidOperationError(
+                "Лимит снятия должен быть конечным Decimal > 0"
+            )
+
+        if (
+            not isinstance(overdraft_limit, Decimal)
+            or not overdraft_limit.is_finite()
+            or overdraft_limit < 0
+        ):
+            raise InvalidOperationError(
+                "Лимит овердрафта должен быть конечным Decimal >= 0"
+            )
+
+        if (
+            not isinstance(fixed_fee, Decimal)
+            or not fixed_fee.is_finite()
+            or fixed_fee < 0
+        ):
+            raise InvalidOperationError(
+                "Комиссия должна быть конечным Decimal >= 0"
+            )
+
+        self._withdrawal_limit = withdrawal_limit
+        self._overdraft_limit = overdraft_limit
+        self._fixed_fee = fixed_fee
+
+    @property
+    def withdrawal_limit(self) -> Decimal:
+        return self._withdrawal_limit
+
+    @property
+    def overdraft_limit(self) -> Decimal:
+        return self._overdraft_limit
+
+    @property
+    def fixed_fee(self) -> Decimal:
+        return self._fixed_fee
+
+    def withdraw(self, amount: Decimal) -> None:
+        self._ensure_active()
+        self._validate_amount(amount)
+
+        if amount > self._withdrawal_limit:
+            raise InvalidOperationError(
+                "Превышен лимит одного снятия"
+            )
+
+        total_amount = amount + self._fixed_fee
+        remaining_balance = self._balance - total_amount
+
+        if remaining_balance < -self._overdraft_limit:
+            raise InsufficientFundsError(
+                "Недостаточно средств с учётом комиссии и овердрафта"
+            )
+
+        self._balance = remaining_balance
 
 
 class InvestmentAccount(BankAccount):
