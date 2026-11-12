@@ -305,6 +305,21 @@ class SavingsAccount(BankAccount):
 
         return interest
 
+    def get_account_info(self) -> dict:
+        info = super().get_account_info()
+
+        info["min_balance"] = self._min_balance
+        info["monthly_interest_rate"] = self._monthly_interest_rate
+
+        return info
+
+    def __str__(self) -> str:
+        return (
+            f"{super().__str__()} | "
+            f"Минимальный остаток: {self._min_balance:.2f} | "
+            f"Ставка в месяц: {self._monthly_interest_rate:.2%}"
+        )
+
 
 class PremiumAccount(BankAccount):
     """Премиальный счёт с овердрафтом и комиссией за снятие."""
@@ -390,6 +405,23 @@ class PremiumAccount(BankAccount):
             )
 
         self._balance = remaining_balance
+
+    def get_account_info(self) -> dict:
+        info = super().get_account_info()
+
+        info["withdrawal_limit"] = self._withdrawal_limit
+        info["overdraft_limit"] = self._overdraft_limit
+        info["fixed_fee"] = self._fixed_fee
+
+        return info
+
+    def __str__(self) -> str:
+        return (
+            f"{super().__str__()} | "
+            f"Лимит снятия: {self._withdrawal_limit:.2f} | "
+            f"Овердрафт: {self._overdraft_limit:.2f} | "
+            f"Комиссия: {self._fixed_fee:.2f}"
+        )
 
 
 class InvestmentAccount(BankAccount):
@@ -479,3 +511,29 @@ class InvestmentAccount(BankAccount):
             total_growth += amount * growth_rates[asset_type]
 
         return total_growth
+
+    def withdraw(self, amount: Decimal) -> None:
+        """Снять только свободные средства, не затрагивая портфель."""
+        super().withdraw(amount)
+
+    def get_account_info(self) -> dict:
+        info = super().get_account_info()
+
+        info["portfolio"] = self.portfolio
+        info["portfolio_value"] = sum(
+            self._portfolio.values(),
+            Decimal("0"),
+        )
+
+        return info
+
+    def __str__(self) -> str:
+        portfolio_description = ", ".join(
+            f"{asset_type}: {amount:.2f}"
+            for asset_type, amount in self._portfolio.items()
+        )
+
+        return (
+            f"{super().__str__()} | "
+            f"Портфель: {portfolio_description}"
+        )
