@@ -443,3 +443,39 @@ class InvestmentAccount(BankAccount):
 
         self._balance -= amount
         self._portfolio[asset_type] += amount
+
+    def project_yearly_growth(
+        self,
+        growth_rates: dict[str, Decimal],
+    ) -> Decimal:
+        """Рассчитать ожидаемый годовой прирост без изменения портфеля."""
+        if not isinstance(growth_rates, dict):
+            raise InvalidOperationError(
+                "Ставки должны быть переданы словарём"
+            )
+
+        for asset_type, rate in growth_rates.items():
+            if asset_type not in self.ASSET_TYPES:
+                raise InvalidOperationError(
+                    f"Неизвестный тип актива: {asset_type}"
+                )
+
+            if not isinstance(rate, Decimal) or not rate.is_finite():
+                raise InvalidOperationError(
+                    f"Ставка для {asset_type} должна быть конечным Decimal"
+                )
+
+        total_growth = Decimal("0")
+
+        for asset_type, amount in self._portfolio.items():
+            if amount == 0:
+                continue
+
+            if asset_type not in growth_rates:
+                raise InvalidOperationError(
+                    f"Не задана ставка для актива: {asset_type}"
+                )
+
+            total_growth += amount * growth_rates[asset_type]
+
+        return total_growth
