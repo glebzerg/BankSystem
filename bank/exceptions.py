@@ -16,3 +16,11 @@ class InvalidOperationError(BankError):
 
 class InsufficientFundsError(BankError):
     """На счёте недостаточно средств."""
+
+
+class AuthenticationError(BankError):
+    """Ошибка проверки учётных данных или сессии."""
+
+
+class ClientBlockedError(AuthenticationError):
+    """Доступ клиента заблокирован."""
