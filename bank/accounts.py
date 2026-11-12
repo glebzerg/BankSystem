@@ -393,5 +393,53 @@ class PremiumAccount(BankAccount):
 
 
 class InvestmentAccount(BankAccount):
-    """Инвестиционный счёт."""
-    pass
+    """Счёт со свободным балансом и виртуальным портфелем."""
+
+    ASSET_TYPES = frozenset({"stocks", "bonds", "etf"})
+
+    def __init__(
+        self,
+        owner: str,
+        currency: Currency = Currency.RUB,
+        balance: Decimal = Decimal("0"),
+        status: AccountStatus = AccountStatus.ACTIVE,
+        account_id: str | None = None,
+    ):
+        super().__init__(
+            owner=owner,
+            currency=currency,
+            balance=balance,
+            status=status,
+            account_id=account_id,
+        )
+
+        self._portfolio = {
+            asset_type: Decimal("0")
+            for asset_type in sorted(self.ASSET_TYPES)
+        }
+
+    @property
+    def portfolio(self) -> dict[str, Decimal]:
+        return self._portfolio.copy()
+
+    def invest(self, asset_type: str, amount: Decimal) -> None:
+        """Перевести свободные деньги в выбранный тип активов."""
+        self._ensure_active()
+
+        if (
+            not isinstance(asset_type, str)
+            or asset_type not in self.ASSET_TYPES
+        ):
+            raise InvalidOperationError(
+                "Допустимые типы активов: stocks, bonds, etf"
+            )
+
+        self._validate_amount(amount)
+
+        if amount > self._balance:
+            raise InsufficientFundsError(
+                "Недостаточно свободных средств для инвестиции"
+            )
+
+        self._balance -= amount
+        self._portfolio[asset_type] += amount
