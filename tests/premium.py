@@ -1,10 +1,55 @@
 from decimal import Decimal
 
-from bank.accounts import PremiumAccount
+from bank.accounts import BankAccount, InvestmentAccount, PremiumAccount, SavingsAccount
 from bank.exceptions import InsufficientFundsError, InvalidOperationError
 
 
 def main() -> None:
+    print("=== Сравнение лимитов счетов ===")
+
+    for account_type in (BankAccount, SavingsAccount, InvestmentAccount):
+        standard = account_type(owner="Иван", balance=Decimal("200000"))
+        assert standard.withdrawal_limit == Decimal("50000"), (
+            f"У {account_type.__name__} ожидался лимит 50000"
+        )
+
+        try:
+            standard.withdraw(Decimal("50000.01"))
+        except InvalidOperationError as error:
+            print(f"{account_type.__name__}: снятие отклонено: {error}")
+        else:
+            raise AssertionError("Превышение обычного лимита разрешено")
+
+        assert standard.balance == Decimal("200000"), (
+            "Отклонённое снятие изменило баланс"
+        )
+        standard.withdraw(Decimal("50000"))
+        assert standard.balance == Decimal("150000"), (
+            "Снятие ровно до лимита выполнено неверно"
+        )
+
+    premium = PremiumAccount(owner="Анна", balance=Decimal("200000"))
+    assert premium.withdrawal_limit == Decimal("100000"), (
+        "У премиального счёта ожидался лимит 100000"
+    )
+    premium.withdraw(Decimal("60000"))
+    assert premium.balance == Decimal("139950"), (
+        "Премиальный счёт должен разрешать снятие 60000 с комиссией 50"
+    )
+    premium.withdraw(Decimal("100000"))
+    assert premium.balance == Decimal("39900"), (
+        "Премиальный счёт должен разрешать снятие ровно 100000 с комиссией"
+    )
+    try:
+        premium.withdraw(Decimal("100000.01"))
+    except InvalidOperationError:
+        pass
+    else:
+        raise AssertionError("Превышение премиального лимита разрешено")
+    assert premium.balance == Decimal("39900"), (
+        "Отклонённое снятие изменило баланс премиального счёта"
+    )
+
     account = PremiumAccount(
         owner="Иван",
         balance=Decimal("10000"),

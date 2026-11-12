@@ -140,6 +140,7 @@ class BankAccount(AbstractAccount):
         )
 
         self._currency = currency
+        self._withdrawal_limit = Decimal("50000")
 
     @staticmethod
     def _generate_id() -> str:
@@ -150,6 +151,10 @@ class BankAccount(AbstractAccount):
     @property
     def currency(self) -> Currency:
         return self._currency
+
+    @property
+    def withdrawal_limit(self) -> Decimal:
+        return self._withdrawal_limit
 
     @staticmethod
     def _validate_amount(amount: Decimal) -> None:
@@ -194,6 +199,9 @@ class BankAccount(AbstractAccount):
         self._ensure_active()
         self._validate_amount(amount)
 
+        if amount > self._withdrawal_limit:
+            raise InvalidOperationError("Превышен лимит одного снятия")
+
         if amount > self._balance:
             raise InsufficientFundsError(
                 "На счёте недостаточно средств"
@@ -210,6 +218,7 @@ class BankAccount(AbstractAccount):
             "balance": self._balance,
             "currency": self._currency.value,
             "status": self._status.value,
+            "withdrawal_limit": self._withdrawal_limit,
         }
 
     def __str__(self) -> str:
@@ -225,7 +234,8 @@ class BankAccount(AbstractAccount):
             f"Счёт: ****{self._account_id[-4:]} | "
             f"Статус: {status_labels[self._status]} | "
             f"Баланс: {self._balance:.2f} "
-            f"{self._currency.value}"
+            f"{self._currency.value} | "
+            f"Лимит снятия: {self._withdrawal_limit:.2f}"
         )
 
 
@@ -376,10 +386,6 @@ class PremiumAccount(BankAccount):
         self._fixed_fee = fixed_fee
 
     @property
-    def withdrawal_limit(self) -> Decimal:
-        return self._withdrawal_limit
-
-    @property
     def overdraft_limit(self) -> Decimal:
         return self._overdraft_limit
 
@@ -409,7 +415,6 @@ class PremiumAccount(BankAccount):
     def get_account_info(self) -> dict:
         info = super().get_account_info()
 
-        info["withdrawal_limit"] = self._withdrawal_limit
         info["overdraft_limit"] = self._overdraft_limit
         info["fixed_fee"] = self._fixed_fee
 
@@ -418,7 +423,6 @@ class PremiumAccount(BankAccount):
     def __str__(self) -> str:
         return (
             f"{super().__str__()} | "
-            f"Лимит снятия: {self._withdrawal_limit:.2f} | "
             f"Овердрафт: {self._overdraft_limit:.2f} | "
             f"Комиссия: {self._fixed_fee:.2f}"
         )
