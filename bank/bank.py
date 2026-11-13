@@ -43,6 +43,7 @@ class Bank:
 
         # Токен сессии → ID клиента.
         self._sessions: dict[str, str] = {}
+        self._suspicious_events: list[dict] = []
 
     @staticmethod
     def _hash_password(password: str, salt: bytes) -> bytes:
@@ -122,6 +123,11 @@ class Bank:
                     if owner_id != client_id
                 }
 
+                self._record_suspicious_activity(
+                    "login_blocked", client_id,
+                    "Клиент заблокирован после трёх неверных попыток входа",
+                )
+
                 raise ClientBlockedError(
                     "Доступ заблокирован после трёх неверных попыток"
                 )
@@ -147,7 +153,7 @@ class Bank:
     ) -> dict:
         """Открыть счёт для клиента с действующей сессией."""
         client = self._get_authenticated_client(session_token)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(client.client_id)
 
         account_classes = {
             "standard": BankAccount,
@@ -193,13 +199,17 @@ class Bank:
         client = self._get_authenticated_client(session_token)
         account = self._get_account(account_id)
         if self._account_owners.get(account_id) != client.client_id:
+            self._record_suspicious_activity(
+                "foreign_account_access", client.client_id,
+                f"Попытка обращения к чужому счёту {account_id}",
+            )
             raise InvalidOperationError("Счёт не принадлежит текущему клиенту")
         return account
 
     def freeze_account(self, session_token: str, account_id: str) -> None:
         """Заморозить активный счёт клиента."""
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         if account.status is not AccountStatus.ACTIVE:
             raise InvalidOperationError("Заморозить можно только активный счёт")
         account._status = AccountStatus.FROZEN
@@ -207,7 +217,7 @@ class Bank:
     def unfreeze_account(self, session_token: str, account_id: str) -> None:
         """Разморозить счёт клиента."""
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         if account.status is not AccountStatus.FROZEN:
             raise InvalidOperationError("Разморозить можно только замороженный счёт")
         account._status = AccountStatus.ACTIVE
@@ -215,7 +225,7 @@ class Bank:
     def close_account(self, session_token: str, account_id: str) -> None:
         """Закрыть счёт без денег, задолженности и вложений."""
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         if account.status is AccountStatus.CLOSED:
             raise InvalidOperationError("Счёт уже закрыт")
         if account.balance != Decimal("0"):
@@ -225,8 +235,8 @@ class Bank:
                 raise InvalidOperationError("Нельзя закрыть счёт с инвестиционным портфелем")
         account._status = AccountStatus.CLOSED
 
-    def _ensure_operations_allowed(self) -> None:
-        """Запретить изменение данных с 00:00 до 05:00 по Москве."""
+    def _get_current_time(self) -> datetime:
+        """Получить московское время из настроенного источника."""
         current = self._now()
         if (
             not isinstance(current, datetime)
@@ -236,24 +246,54 @@ class Bank:
             raise InvalidOperationError(
                 "Источник времени должен возвращать datetime с часовым поясом"
             )
-        if current.astimezone(self.BANK_TIMEZONE).hour < 5:
+        return current.astimezone(self.BANK_TIMEZONE)
+
+    def _record_suspicious_activity(
+        self, event_type: str, client_id: str | None, description: str,
+        *, occurred_at: datetime | None = None,
+    ) -> None:
+        """Сохранить подозрительное действие в памяти банка."""
+        self._suspicious_events.append({
+            "time": occurred_at if occurred_at is not None else self._get_current_time(),
+            "event_type": event_type,
+            "client_id": client_id,
+            "description": description,
+        })
+
+    def _ensure_operations_allowed(self, client_id: str | None = None) -> None:
+        """Запретить изменение данных с 00:00 до 05:00 по Москве."""
+        current = self._get_current_time()
+        if current.hour < 5:
+            self._record_suspicious_activity(
+                "night_operation", client_id,
+                "Попытка изменения данных с 00:00 до 05:00",
+                occurred_at=current,
+            )
             raise InvalidOperationError("Операции запрещены с 00:00 до 05:00 по Москве")
+
+    def get_suspicious_events(self, session_token: str) -> list[dict]:
+        """Вернуть копии событий текущего клиента."""
+        client = self._get_authenticated_client(session_token)
+        return [
+            event.copy() for event in self._suspicious_events
+            if event["client_id"] == client.client_id
+        ]
 
     def deposit(self, session_token: str, account_id: str, amount: Decimal) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         account.deposit(amount)
 
     def withdraw(self, session_token: str, account_id: str, amount: Decimal) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         account.withdraw(amount)
 
     def invest(
         self, session_token: str, account_id: str, asset_type: str, amount: Decimal,
     ) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         if not isinstance(account, InvestmentAccount):
             raise InvalidOperationError(
                 "Инвестирование доступно только инвестиционному счёту"
@@ -262,7 +302,7 @@ class Bank:
 
     def apply_monthly_interest(self, session_token: str, account_id: str) -> Decimal:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed()
+        self._ensure_operations_allowed(self._account_owners[account.account_id])
         if not isinstance(account, SavingsAccount):
             raise InvalidOperationError(
                 "Начисление процентов доступно только накопительному счёту"
