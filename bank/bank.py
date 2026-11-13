@@ -237,6 +237,23 @@ class Bank:
             result.append(account.get_account_info())
         return result
 
+    @staticmethod
+    def _get_account_total(account: BankAccount) -> Decimal:
+        """Посчитать средства счёта с учётом портфеля."""
+        total = account.balance
+        if isinstance(account, InvestmentAccount):
+            total += sum(account.portfolio.values(), Decimal("0"))
+        return total
+
+    def get_total_balance(self) -> dict[str, Decimal]:
+        """Посчитать средства банка отдельно по каждой валюте."""
+        totals = {currency.value: Decimal("0") for currency in Currency}
+        for account in self._accounts.values():
+            if account.status is AccountStatus.CLOSED:
+                continue
+            totals[account.currency.value] += self._get_account_total(account)
+        return totals
+
     def _get_owned_account(
         self, session_token: str, account_id: str,
     ) -> BankAccount:
