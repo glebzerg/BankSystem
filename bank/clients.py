@@ -117,6 +117,14 @@ class Client:
     def account_numbers(self) -> list[str]:
         return self._account_numbers.copy()
 
+    def _add_account(self, account_id: str) -> None:
+        """Добавить номер счёта при открытии через банк."""
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise InvalidOperationError("Номер счёта должен быть непустой строкой")
+        if account_id in self._account_numbers:
+            raise InvalidOperationError("Счёт уже связан с клиентом")
+        self._account_numbers.append(account_id)
+
     def __str__(self) -> str:
         return (
             f"Client | ФИО: {self._full_name} | "

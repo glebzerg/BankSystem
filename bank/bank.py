@@ -1,8 +1,15 @@
 import hashlib
 import hmac
 import secrets
+from decimal import Decimal
 
-from .accounts import BankAccount
+from .accounts import (
+    BankAccount,
+    Currency,
+    InvestmentAccount,
+    PremiumAccount,
+    SavingsAccount,
+)
 from .clients import Client, ClientStatus
 from .exceptions import (
     AuthenticationError,
@@ -121,6 +128,54 @@ class Bank:
 
         self._sessions[token] = client_id
         return token
+
+    def open_account(
+        self,
+        session_token: str,
+        account_type: str,
+        currency: Currency = Currency.RUB,
+        balance: Decimal = Decimal("0"),
+        **settings,
+    ) -> dict:
+        """Открыть счёт для клиента с действующей сессией."""
+        client = self._get_authenticated_client(session_token)
+
+        account_classes = {
+            "standard": BankAccount,
+            "savings": SavingsAccount,
+            "premium": PremiumAccount,
+            "investment": InvestmentAccount,
+        }
+        if not isinstance(account_type, str) or account_type not in account_classes:
+            raise InvalidOperationError(
+                "Допустимые типы счетов: standard, savings, premium, investment"
+            )
+
+        allowed_settings = {
+            "standard": set(),
+            "savings": {"min_balance", "monthly_interest_rate"},
+            "premium": {"withdrawal_limit", "overdraft_limit", "fixed_fee"},
+            "investment": set(),
+        }
+        unknown_settings = set(settings) - allowed_settings[account_type]
+        if unknown_settings:
+            raise InvalidOperationError(
+                "Недопустимые настройки счёта: " + ", ".join(sorted(unknown_settings))
+            )
+
+        account_class = account_classes[account_type]
+        account = account_class(
+            owner=client.full_name, currency=currency, balance=balance, **settings,
+        )
+        while account.account_id in self._accounts:
+            account = account_class(
+                owner=client.full_name, currency=currency, balance=balance, **settings,
+            )
+
+        client._add_account(account.account_id)
+        self._accounts[account.account_id] = account
+        self._account_owners[account.account_id] = client.client_id
+        return account.get_account_info()
 
     def _get_authenticated_client(self, session_token: str) -> Client:
         """Проверить сессию и текущий статус клиента."""
