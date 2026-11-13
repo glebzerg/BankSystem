@@ -4,6 +4,7 @@ import secrets
 from decimal import Decimal
 
 from .accounts import (
+    AccountStatus,
     BankAccount,
     Currency,
     InvestmentAccount,
@@ -176,6 +177,42 @@ class Bank:
         self._accounts[account.account_id] = account
         self._account_owners[account.account_id] = client.client_id
         return account.get_account_info()
+
+    def _get_owned_account(
+        self, session_token: str, account_id: str,
+    ) -> BankAccount:
+        """Проверить сессию и принадлежность счёта клиенту."""
+        client = self._get_authenticated_client(session_token)
+        account = self._get_account(account_id)
+        if self._account_owners.get(account_id) != client.client_id:
+            raise InvalidOperationError("Счёт не принадлежит текущему клиенту")
+        return account
+
+    def freeze_account(self, session_token: str, account_id: str) -> None:
+        """Заморозить активный счёт клиента."""
+        account = self._get_owned_account(session_token, account_id)
+        if account.status is not AccountStatus.ACTIVE:
+            raise InvalidOperationError("Заморозить можно только активный счёт")
+        account._status = AccountStatus.FROZEN
+
+    def unfreeze_account(self, session_token: str, account_id: str) -> None:
+        """Разморозить счёт клиента."""
+        account = self._get_owned_account(session_token, account_id)
+        if account.status is not AccountStatus.FROZEN:
+            raise InvalidOperationError("Разморозить можно только замороженный счёт")
+        account._status = AccountStatus.ACTIVE
+
+    def close_account(self, session_token: str, account_id: str) -> None:
+        """Закрыть счёт без денег, задолженности и вложений."""
+        account = self._get_owned_account(session_token, account_id)
+        if account.status is AccountStatus.CLOSED:
+            raise InvalidOperationError("Счёт уже закрыт")
+        if account.balance != Decimal("0"):
+            raise InvalidOperationError("Для закрытия баланс должен быть равен нулю")
+        if isinstance(account, InvestmentAccount):
+            if any(amount != 0 for amount in account.portfolio.values()):
+                raise InvalidOperationError("Нельзя закрыть счёт с инвестиционным портфелем")
+        account._status = AccountStatus.CLOSED
 
     def _get_authenticated_client(self, session_token: str) -> Client:
         """Проверить сессию и текущий статус клиента."""
