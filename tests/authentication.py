@@ -1,6 +1,6 @@
 """Проверки входа: python -B -m unittest tests.authentication -v."""
 import unittest
-from datetime import date
+from datetime import date, datetime
 
 from bank.bank import Bank
 from bank.clients import Client, ClientStatus
@@ -9,7 +9,9 @@ from bank.exceptions import AuthenticationError, ClientBlockedError
 
 class AuthenticationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.bank = Bank()
+        self.bank = Bank(
+            now=lambda: datetime(2026, 11, 13, 12, tzinfo=Bank.BANK_TIMEZONE)
+        )
         self.client = Client(
             full_name="Иван Петров",
             birth_date=date(2000, 5, 15),

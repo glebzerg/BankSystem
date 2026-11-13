@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import secrets
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounts import (
@@ -23,8 +25,12 @@ class Bank:
     """Хранит клиентов, счета и учётные данные."""
 
     PASSWORD_HASH_ITERATIONS = 600_000
+    BANK_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 
-    def __init__(self):
+    def __init__(self, *, now: Callable[[], datetime] | None = None):
+        if now is not None and not callable(now):
+            raise InvalidOperationError("Источник времени должен быть вызываемым объектом")
+        self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
@@ -50,6 +56,7 @@ class Bank:
 
     def add_client(self, client: Client, password: str) -> None:
         """Зарегистрировать клиента и сохранить хеш его пароля."""
+        self._ensure_operations_allowed()
         if not isinstance(client, Client):
             raise InvalidOperationError(
                 "Ожидается объект Client"
@@ -140,6 +147,7 @@ class Bank:
     ) -> dict:
         """Открыть счёт для клиента с действующей сессией."""
         client = self._get_authenticated_client(session_token)
+        self._ensure_operations_allowed()
 
         account_classes = {
             "standard": BankAccount,
@@ -191,6 +199,7 @@ class Bank:
     def freeze_account(self, session_token: str, account_id: str) -> None:
         """Заморозить активный счёт клиента."""
         account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
         if account.status is not AccountStatus.ACTIVE:
             raise InvalidOperationError("Заморозить можно только активный счёт")
         account._status = AccountStatus.FROZEN
@@ -198,6 +207,7 @@ class Bank:
     def unfreeze_account(self, session_token: str, account_id: str) -> None:
         """Разморозить счёт клиента."""
         account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
         if account.status is not AccountStatus.FROZEN:
             raise InvalidOperationError("Разморозить можно только замороженный счёт")
         account._status = AccountStatus.ACTIVE
@@ -205,6 +215,7 @@ class Bank:
     def close_account(self, session_token: str, account_id: str) -> None:
         """Закрыть счёт без денег, задолженности и вложений."""
         account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
         if account.status is AccountStatus.CLOSED:
             raise InvalidOperationError("Счёт уже закрыт")
         if account.balance != Decimal("0"):
@@ -213,6 +224,50 @@ class Bank:
             if any(amount != 0 for amount in account.portfolio.values()):
                 raise InvalidOperationError("Нельзя закрыть счёт с инвестиционным портфелем")
         account._status = AccountStatus.CLOSED
+
+    def _ensure_operations_allowed(self) -> None:
+        """Запретить изменение данных с 00:00 до 05:00 по Москве."""
+        current = self._now()
+        if (
+            not isinstance(current, datetime)
+            or current.tzinfo is None
+            or current.utcoffset() is None
+        ):
+            raise InvalidOperationError(
+                "Источник времени должен возвращать datetime с часовым поясом"
+            )
+        if current.astimezone(self.BANK_TIMEZONE).hour < 5:
+            raise InvalidOperationError("Операции запрещены с 00:00 до 05:00 по Москве")
+
+    def deposit(self, session_token: str, account_id: str, amount: Decimal) -> None:
+        account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
+        account.deposit(amount)
+
+    def withdraw(self, session_token: str, account_id: str, amount: Decimal) -> None:
+        account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
+        account.withdraw(amount)
+
+    def invest(
+        self, session_token: str, account_id: str, asset_type: str, amount: Decimal,
+    ) -> None:
+        account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
+        if not isinstance(account, InvestmentAccount):
+            raise InvalidOperationError(
+                "Инвестирование доступно только инвестиционному счёту"
+            )
+        account.invest(asset_type, amount)
+
+    def apply_monthly_interest(self, session_token: str, account_id: str) -> Decimal:
+        account = self._get_owned_account(session_token, account_id)
+        self._ensure_operations_allowed()
+        if not isinstance(account, SavingsAccount):
+            raise InvalidOperationError(
+                "Начисление процентов доступно только накопительному счёту"
+            )
+        return account.apply_monthly_interest()
 
     def _get_authenticated_client(self, session_token: str) -> Client:
         """Проверить сессию и текущий статус клиента."""

@@ -1,6 +1,6 @@
 """Проверки открытия счетов: python -B -m unittest tests.opening -v."""
 import unittest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -12,7 +12,9 @@ from bank.exceptions import AuthenticationError, InvalidOperationError
 
 class OpeningTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.bank = Bank()
+        self.bank = Bank(
+            now=lambda: datetime(2026, 11, 13, 12, tzinfo=Bank.BANK_TIMEZONE)
+        )
         self.client = Client("Иван", date(2000, 1, 1), {"phone": "+79991234567"})
         self.bank.add_client(self.client, "password")
         self.token = self.bank.authenticate_client(self.client.client_id, "password")
