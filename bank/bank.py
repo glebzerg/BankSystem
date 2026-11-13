@@ -192,6 +192,51 @@ class Bank:
         self._account_owners[account.account_id] = client.client_id
         return account.get_account_info()
 
+    def search_accounts(
+        self,
+        session_token: str,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        status: AccountStatus | None = None,
+        currency: Currency | None = None,
+    ) -> list[dict]:
+        """Найти собственные счета по указанным фильтрам."""
+        client = self._get_authenticated_client(session_token)
+        account_classes = {
+            "standard": BankAccount,
+            "savings": SavingsAccount,
+            "premium": PremiumAccount,
+            "investment": InvestmentAccount,
+        }
+        if account_id is not None:
+            if not isinstance(account_id, str) or not account_id.strip():
+                raise InvalidOperationError("Номер счёта должен быть непустой строкой")
+        if account_type is not None:
+            if not isinstance(account_type, str) or account_type not in account_classes:
+                raise InvalidOperationError(
+                    "Допустимые типы счетов: standard, savings, premium, investment"
+                )
+        if status is not None and not isinstance(status, AccountStatus):
+            raise InvalidOperationError("Статус должен быть элементом AccountStatus")
+        if currency is not None and not isinstance(currency, Currency):
+            raise InvalidOperationError("Валюта должна быть элементом Currency")
+
+        result = []
+        for number in client.account_numbers:
+            account = self._accounts[number]
+            if account_id is not None and number != account_id:
+                continue
+            if account_type is not None:
+                if type(account) is not account_classes[account_type]:
+                    continue
+            if status is not None and account.status is not status:
+                continue
+            if currency is not None and account.currency is not currency:
+                continue
+            result.append(account.get_account_info())
+        return result
+
     def _get_owned_account(
         self, session_token: str, account_id: str,
     ) -> BankAccount:
