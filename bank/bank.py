@@ -254,6 +254,35 @@ class Bank:
             totals[account.currency.value] += self._get_account_total(account)
         return totals
 
+    def get_clients_ranking(
+        self, currency: Currency = Currency.RUB,
+    ) -> list[dict]:
+        """Расположить клиентов по сумме средств в выбранной валюте."""
+        if not isinstance(currency, Currency):
+            raise InvalidOperationError("Валюта должна быть элементом Currency")
+        client_totals = {client_id: Decimal("0") for client_id in self._clients}
+        for account_id, account in self._accounts.items():
+            if account.status is AccountStatus.CLOSED:
+                continue
+            if account.currency is not currency:
+                continue
+            client_id = self._account_owners[account_id]
+            client_totals[client_id] += self._get_account_total(account)
+
+        ranking = []
+        for client_id, total in client_totals.items():
+            client = self._clients[client_id]
+            ranking.append({
+                "client_id": client_id,
+                "full_name": client.full_name,
+                "total_balance": total,
+                "currency": currency.value,
+            })
+        return sorted(
+            ranking,
+            key=lambda item: (-item["total_balance"], item["client_id"]),
+        )
+
     def _get_owned_account(
         self, session_token: str, account_id: str,
     ) -> BankAccount:
