@@ -18,8 +18,15 @@ class TransactionType(Enum):
 
 
 class TransactionStatus(Enum):
-    # Остальные состояния и переходы добавим при разборе жизненного цикла.
+    """Этапы обработки поручения."""
+
     CREATED = "created"
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    RETRY_PENDING = "retry_pending"
 
 
 def _clean_identifier(value: str, label: str) -> str:
@@ -116,6 +123,73 @@ class Transaction:
         self._created_at = datetime.now(timezone.utc)
         self._updated_at = self._created_at
         self._completed_at: datetime | None = None
+
+    def mark_queued(self) -> None:
+        """Поставить новое поручение или повторную попытку в очередь."""
+        self._change_status(
+            TransactionStatus.QUEUED,
+            (TransactionStatus.CREATED, TransactionStatus.RETRY_PENDING),
+        )
+
+    def mark_processing(self) -> None:
+        """Начать выполнение операции из очереди."""
+        self._change_status(
+            TransactionStatus.PROCESSING, (TransactionStatus.QUEUED,),
+        )
+        self._failure_reason = None
+
+    def mark_completed(self) -> None:
+        """Зафиксировать успешное выполнение операции."""
+        self._change_status(
+            TransactionStatus.COMPLETED, (TransactionStatus.PROCESSING,),
+        )
+        self._completed_at = self._updated_at
+
+    def mark_failed(self, reason: str) -> None:
+        """Зафиксировать окончательный отказ с обязательной причиной."""
+        reason = _clean_identifier(reason, "Описание ошибки")
+        self._change_status(
+            TransactionStatus.FAILED, (TransactionStatus.PROCESSING,),
+        )
+        self._failure_reason = reason
+
+    def mark_retry_pending(self, reason: str) -> None:
+        """Зафиксировать временную ошибку и ожидание повторной попытки.
+
+        Время следующей попытки и её допустимость определит процессор.
+        """
+        reason = _clean_identifier(reason, "Описание ошибки")
+        self._change_status(
+            TransactionStatus.RETRY_PENDING, (TransactionStatus.PROCESSING,),
+        )
+        self._failure_reason = reason
+
+    def cancel(self) -> None:
+        """Отменить поручение, которое сейчас не выполняется."""
+        self._change_status(
+            TransactionStatus.CANCELLED,
+            (
+                TransactionStatus.CREATED,
+                TransactionStatus.QUEUED,
+                TransactionStatus.RETRY_PENDING,
+            ),
+        )
+        self._failure_reason = None
+
+    def _change_status(
+        self,
+        new_status: TransactionStatus,
+        allowed_from: tuple[TransactionStatus, ...],
+    ) -> None:
+        """Проверить переход до изменения состояния и обновить время."""
+        if self._status not in allowed_from:
+            raise InvalidOperationError(
+                f"Недопустимый переход: {self._status.value} → {new_status.value}"
+            )
+
+        changed_at = datetime.now(timezone.utc)
+        self._status = new_status
+        self._updated_at = changed_at
 
     @property
     def transaction_id(self) -> str:
