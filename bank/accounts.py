@@ -209,6 +209,50 @@ class BankAccount(AbstractAccount):
 
         self._balance -= amount
 
+    def _validate_transfer_funds(self, total_amount: Decimal) -> None:
+        """Проверить доступные средства для перевода вместе с комиссией."""
+        if self._balance - total_amount < 0:
+            raise InsufficientFundsError(
+                "Недостаточно средств для перевода с учётом комиссии"
+            )
+
+    def transfer_to(
+        self,
+        recipient: "BankAccount",
+        amount: Decimal,
+        *,
+        fee: Decimal = Decimal("0"),
+    ) -> None:
+        """Перевести деньги в той же валюте без комиссии за снятие.
+
+        Комиссию рассчитывает вызывающий код. Все проверки и расчёты
+        выполняются до изменения балансов. Метод рассчитан на один поток;
+        проверки доступа клиента остаются обязанностью Bank.
+        """
+        if not isinstance(recipient, BankAccount):
+            raise InvalidOperationError("Получатель должен быть банковским счётом")
+        if self is recipient or self.account_id == recipient.account_id:
+            raise InvalidOperationError("Нельзя переводить на тот же самый счёт")
+        self._ensure_active()
+        recipient._ensure_active()
+        self._validate_amount(amount)
+        if not isinstance(fee, Decimal) or not fee.is_finite() or fee < 0:
+            raise InvalidOperationError("Комиссия должна быть конечным Decimal >= 0")
+        if self.currency is not recipient.currency:
+            raise InvalidOperationError("Для разных валют необходима конвертация")
+
+        total_amount = amount + fee
+        self._validate_amount(total_amount)
+        self._validate_transfer_funds(total_amount)
+        sender_balance = self._balance - total_amount
+        recipient_balance = recipient._balance + amount
+        if not sender_balance.is_finite() or not recipient_balance.is_finite():
+            raise InvalidOperationError("Итоговые балансы должны быть конечными")
+
+        # После расчётов остаётся только записать два готовых значения.
+        self._balance = sender_balance
+        recipient._balance = recipient_balance
+
     def get_account_info(self) -> dict:
         """Вернуть сведения о счёте."""
         return {
@@ -305,6 +349,12 @@ class SavingsAccount(BankAccount):
             )
 
         super().withdraw(amount)
+
+    def _validate_transfer_funds(self, total_amount: Decimal) -> None:
+        if self._balance - total_amount < self._min_balance:
+            raise InsufficientFundsError(
+                "После перевода останется меньше минимального остатка"
+            )
 
     def apply_monthly_interest(self) -> Decimal:
         """Начислить доход за месяц и вернуть начисленную сумму."""
@@ -411,6 +461,12 @@ class PremiumAccount(BankAccount):
             )
 
         self._balance = remaining_balance
+
+    def _validate_transfer_funds(self, total_amount: Decimal) -> None:
+        if self._balance - total_amount < -self._overdraft_limit:
+            raise InsufficientFundsError(
+                "Перевод с комиссией превышает доступный овердрафт"
+            )
 
     def get_account_info(self) -> dict:
         info = super().get_account_info()
