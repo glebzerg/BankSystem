@@ -118,11 +118,39 @@ class Transaction:
         self._recipient_account_id = recipient_account_id
         self._external_recipient = external_recipient
         self._fee: Decimal | None = None
+        self._exchange_rate: Decimal | None = None
+        self._recipient_amount: Decimal | None = None
+        self._recipient_currency: Currency | None = None
         self._status = TransactionStatus.CREATED
         self._failure_reason: str | None = None
         self._created_at = datetime.now(timezone.utc)
         self._updated_at = self._created_at
         self._completed_at: datetime | None = None
+
+    def set_calculation(
+        self,
+        fee: Decimal,
+        *,
+        exchange_rate: Decimal | None = None,
+        recipient_amount: Decimal | None = None,
+        recipient_currency: Currency | None = None,
+    ) -> None:
+        """Сохранить расчёт перед выполнением; он сам по себе не означает успех."""
+        if self._status is not TransactionStatus.PROCESSING:
+            raise InvalidOperationError("Расчёт разрешён только во время обработки")
+        if not isinstance(fee, Decimal) or not fee.is_finite() or fee < 0:
+            raise InvalidOperationError("Комиссия должна быть конечным Decimal >= 0")
+        if any(value is not None for value in (exchange_rate, recipient_amount, recipient_currency)):
+            for value in (exchange_rate, recipient_amount):
+                if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+                    raise InvalidOperationError("Курс и сумма зачисления должны быть конечными Decimal > 0")
+            if not isinstance(recipient_currency, Currency):
+                raise InvalidOperationError("Нужна валюта зачисления из Currency")
+        self._fee = fee
+        self._exchange_rate = exchange_rate
+        self._recipient_amount = recipient_amount
+        self._recipient_currency = recipient_currency
+        self._updated_at = datetime.now(timezone.utc)
 
     def mark_queued(self) -> None:
         """Поставить новое поручение или повторную попытку в очередь."""
@@ -222,6 +250,18 @@ class Transaction:
     @property
     def fee(self) -> Decimal | None:
         return self._fee
+
+    @property
+    def exchange_rate(self) -> Decimal | None:
+        return self._exchange_rate
+
+    @property
+    def recipient_amount(self) -> Decimal | None:
+        return self._recipient_amount
+
+    @property
+    def recipient_currency(self) -> Currency | None:
+        return self._recipient_currency
 
     @property
     def status(self) -> TransactionStatus:

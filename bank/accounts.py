@@ -1,6 +1,6 @@
 import uuid
 from abc import ABC, abstractmethod
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
 from .exceptions import (
@@ -222,8 +222,9 @@ class BankAccount(AbstractAccount):
         amount: Decimal,
         *,
         fee: Decimal = Decimal("0"),
+        exchange_rate: Decimal | None = None,
     ) -> None:
-        """Перевести деньги в той же валюте без комиссии за снятие.
+        """Перевести деньги без комиссии за снятие, при необходимости с обменом.
 
         Комиссию рассчитывает вызывающий код. Все проверки и расчёты
         выполняются до изменения балансов. Метод рассчитан на один поток;
@@ -238,20 +239,44 @@ class BankAccount(AbstractAccount):
         self._validate_amount(amount)
         if not isinstance(fee, Decimal) or not fee.is_finite() or fee < 0:
             raise InvalidOperationError("Комиссия должна быть конечным Decimal >= 0")
-        if self.currency is not recipient.currency:
-            raise InvalidOperationError("Для разных валют необходима конвертация")
+        if self.currency is recipient.currency:
+            if exchange_rate is not None and exchange_rate != Decimal("1"):
+                raise InvalidOperationError("Для одной валюты курс должен быть равен 1")
+            received = amount
+        else:
+            self._validate_amount(exchange_rate)
+            received = (amount * exchange_rate).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP,
+            )
+            self._validate_amount(received)
 
         total_amount = amount + fee
         self._validate_amount(total_amount)
         self._validate_transfer_funds(total_amount)
         sender_balance = self._balance - total_amount
-        recipient_balance = recipient._balance + amount
+        recipient_balance = recipient._balance + received
         if not sender_balance.is_finite() or not recipient_balance.is_finite():
             raise InvalidOperationError("Итоговые балансы должны быть конечными")
 
         # После расчётов остаётся только записать два готовых значения.
         self._balance = sender_balance
         recipient._balance = recipient_balance
+
+    def debit_transfer(
+        self, amount: Decimal, *, fee: Decimal = Decimal("0"),
+    ) -> None:
+        """Списать моделируемый внешний перевод без комиссии за снятие."""
+        self._ensure_active()
+        self._validate_amount(amount)
+        if not isinstance(fee, Decimal) or not fee.is_finite() or fee < 0:
+            raise InvalidOperationError("Комиссия должна быть конечным Decimal >= 0")
+        total_amount = amount + fee
+        self._validate_amount(total_amount)
+        self._validate_transfer_funds(total_amount)
+        remaining = self._balance - total_amount
+        if not remaining.is_finite():
+            raise InvalidOperationError("Итоговый баланс должен быть конечным")
+        self._balance = remaining
 
     def get_account_info(self) -> dict:
         """Вернуть сведения о счёте."""
