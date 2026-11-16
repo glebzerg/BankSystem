@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -19,6 +19,9 @@ from .exceptions import (
     ClientBlockedError,
     InvalidOperationError,
 )
+from .transaction_processor import TransactionProcessor
+from .transaction_queue import TransactionQueue
+from .transactions import ExternalRecipient, Transaction, TransactionType
 
 
 class Bank:
@@ -27,7 +30,13 @@ class Bank:
     PASSWORD_HASH_ITERATIONS = 600_000
     BANK_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 
-    def __init__(self, *, now: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        *,
+        now: Callable[[], datetime] | None = None,
+        exchange_rates: Mapping[tuple[Currency, Currency], Decimal] | None = None,
+        external_preflight: Callable[[Transaction], None] | None = None,
+    ):
         if now is not None and not callable(now):
             raise InvalidOperationError("Источник времени должен быть вызываемым объектом")
         self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
@@ -44,6 +53,15 @@ class Bank:
         # Токен сессии → ID клиента.
         self._sessions: dict[str, str] = {}
         self._suspicious_events: list[dict] = []
+        self._transactions: dict[str, Transaction] = {}
+        self._transaction_owners: dict[str, str] = {}
+        self._transaction_queue = TransactionQueue(now=self._get_current_time)
+        self._transaction_processor = TransactionProcessor(
+            self._transaction_queue, self._accounts,
+            exchange_rates=exchange_rates,
+            external_preflight=external_preflight,
+            before_execute=self._validate_transaction_execution,
+        )
 
     @staticmethod
     def _hash_password(password: str, salt: bytes) -> bytes:
@@ -369,6 +387,155 @@ class Bank:
             event.copy() for event in self._suspicious_events
             if event["client_id"] == client.client_id
         ]
+
+    def create_transaction(
+        self,
+        session_token: str,
+        transaction_type: TransactionType,
+        amount: Decimal,
+        currency: Currency,
+        *,
+        sender_account_id: str | None = None,
+        recipient_account_id: str | None = None,
+        external_recipient: ExternalRecipient | None = None,
+        priority: int = 0,
+        scheduled_at: datetime | None = None,
+    ) -> dict:
+        """Проверить поручение клиента и сразу поставить его в очередь."""
+        client = self._get_authenticated_client(session_token)
+        self._ensure_operations_allowed(client.client_id)
+        transaction = Transaction(
+            transaction_type, amount, currency,
+            sender_account_id=sender_account_id,
+            recipient_account_id=recipient_account_id,
+            external_recipient=external_recipient,
+        )
+        # Для пополнения клиент управляет получателем, для остальных — отправителем.
+        controlled_id = (
+            transaction.recipient_account_id
+            if transaction_type is TransactionType.DEPOSIT
+            else transaction.sender_account_id
+        )
+        account = self._get_owned_account(session_token, controlled_id)
+        if account.currency is not currency:
+            raise InvalidOperationError("Валюта поручения не совпадает с валютой счёта")
+        if transaction.recipient_account_id is not None:
+            self._get_account(transaction.recipient_account_id)
+        self._transaction_queue.add(
+            transaction, priority=priority, scheduled_at=scheduled_at,
+        )
+        self._transactions[transaction.transaction_id] = transaction
+        self._transaction_owners[transaction.transaction_id] = client.client_id
+        return self._transaction_info(transaction)
+
+    def _validate_transaction_execution(self, transaction: Transaction) -> None:
+        """Повторно проверить права и ограничения перед каждой попыткой."""
+        owner_id = self._transaction_owners.get(transaction.transaction_id)
+        if owner_id is None:
+            raise InvalidOperationError("Владелец поручения не найден")
+        self._ensure_operations_allowed(owner_id)
+        owner = self._get_client(owner_id)
+        if owner.status is ClientStatus.BLOCKED:
+            raise ClientBlockedError("Создатель поручения заблокирован")
+        controlled_id = (
+            transaction.recipient_account_id
+            if transaction.transaction_type is TransactionType.DEPOSIT
+            else transaction.sender_account_id
+        )
+        if self._account_owners.get(controlled_id) != owner_id:
+            raise InvalidOperationError("Счёт больше не принадлежит создателю поручения")
+        for account_id in (transaction.sender_account_id, transaction.recipient_account_id):
+            if account_id is None:
+                continue
+            self._get_account(account_id)
+            participant = self._get_client(self._account_owners[account_id])
+            if participant.status is ClientStatus.BLOCKED:
+                raise ClientBlockedError("Клиент — участник операции заблокирован")
+
+    def process_transactions(self) -> int:
+        """Служебный запуск банка: обработать готовые операции всех клиентов.
+
+        Это метод для управляющего кода учебной системы, не клиентская операция.
+        Ночью очередь не извлекается. Возвращает число обработанных попыток.
+        """
+        self._ensure_operations_allowed()
+        return len(self._transaction_processor.process_all())
+
+    def _get_owned_transaction(self, session_token: str, transaction_id: str) -> Transaction:
+        client = self._get_authenticated_client(session_token)
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise InvalidOperationError("ID транзакции должен быть непустой строкой")
+        transaction = self._transactions.get(transaction_id)
+        if transaction is None:
+            raise InvalidOperationError("Транзакция не найдена")
+        if self._transaction_owners[transaction_id] != client.client_id:
+            self._record_suspicious_activity(
+                "foreign_transaction_access", client.client_id,
+                f"Попытка обращения к чужому поручению {transaction_id}",
+            )
+            raise InvalidOperationError("Поручение не принадлежит текущему клиенту")
+        return transaction
+
+    def get_transaction(self, session_token: str, transaction_id: str) -> dict:
+        """Вернуть снимок собственного поручения."""
+        return self._transaction_info(self._get_owned_transaction(session_token, transaction_id))
+
+    def get_transactions(self, session_token: str) -> list[dict]:
+        """Вернуть собственные поручения в порядке создания."""
+        client = self._get_authenticated_client(session_token)
+        return [
+            self._transaction_info(transaction)
+            for transaction_id, transaction in self._transactions.items()
+            if self._transaction_owners[transaction_id] == client.client_id
+        ]
+
+    def cancel_transaction(self, session_token: str, transaction_id: str) -> None:
+        transaction = self._get_owned_transaction(session_token, transaction_id)
+        self._ensure_operations_allowed(self._transaction_owners[transaction_id])
+        self._transaction_queue.cancel(transaction.transaction_id)
+
+    def get_transaction_errors(self, session_token: str) -> list[dict]:
+        """Вернуть журнал только собственных поручений."""
+        client = self._get_authenticated_client(session_token)
+        return [
+            {
+                "transaction_id": record.transaction_id,
+                "attempt": record.attempt,
+                "occurred_at": record.occurred_at,
+                "error_type": record.error_type,
+                "message": record.message,
+                "retry_at": record.retry_at,
+            }
+            for record in self._transaction_processor.errors
+            if self._transaction_owners.get(record.transaction_id) == client.client_id
+        ]
+
+    @staticmethod
+    def _transaction_info(transaction: Transaction) -> dict:
+        external = transaction.external_recipient
+        return {
+            "transaction_id": transaction.transaction_id,
+            "transaction_type": transaction.transaction_type.value,
+            "amount": transaction.amount,
+            "currency": transaction.currency.value,
+            "sender_account_id": transaction.sender_account_id,
+            "recipient_account_id": transaction.recipient_account_id,
+            "external_recipient": None if external is None else {
+                "account_number": external.account_number, "bank_id": external.bank_id,
+            },
+            "fee": transaction.fee,
+            "exchange_rate": transaction.exchange_rate,
+            "recipient_amount": transaction.recipient_amount,
+            "recipient_currency": (
+                transaction.recipient_currency.value if transaction.recipient_currency else None
+            ),
+            "status": transaction.status.value,
+            "failure_reason": transaction.failure_reason,
+            "attempts_count": transaction.attempts_count,
+            "created_at": transaction.created_at,
+            "updated_at": transaction.updated_at,
+            "completed_at": transaction.completed_at,
+        }
 
     def deposit(self, session_token: str, account_id: str, amount: Decimal) -> None:
         account = self._get_owned_account(session_token, account_id)

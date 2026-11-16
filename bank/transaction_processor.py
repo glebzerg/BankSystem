@@ -24,7 +24,7 @@ class TransactionErrorRecord:
 
 
 class TransactionProcessor:
-    """Выполняет готовые операции. Доступ клиентов проверит Bank при интеграции.
+    """Выполняет готовые операции; Bank проверяет доступ через before_execute.
 
     Внешний перевод моделируется списанием: реальных сетевых запросов нет.
     Курсы задаются направленными парами, автоматически обратный курс не ищется.
@@ -40,6 +40,7 @@ class TransactionProcessor:
         max_attempts: int = 3,
         retry_delay: timedelta = timedelta(seconds=60),
         external_preflight: Callable[[Transaction], None] | None = None,
+        before_execute: Callable[[Transaction], None] | None = None,
     ):
         if not isinstance(queue, TransactionQueue):
             raise InvalidOperationError("Ожидается очередь TransactionQueue")
@@ -51,6 +52,8 @@ class TransactionProcessor:
             raise InvalidOperationError("Задержка повторов должна быть положительным timedelta")
         if external_preflight is not None and not callable(external_preflight):
             raise InvalidOperationError("Проверка внешнего банка должна быть вызываемым объектом")
+        if before_execute is not None and not callable(before_execute):
+            raise InvalidOperationError("Проверка операции должна быть вызываемым объектом")
         if (
             not isinstance(external_fee_rate, Decimal)
             or not external_fee_rate.is_finite()
@@ -77,6 +80,7 @@ class TransactionProcessor:
         # Проверка только доступности: она не должна отправлять перевод
         # или менять балансы. TemporaryTransactionError гарантирует отсутствие списания.
         self._external_preflight = external_preflight
+        self._before_execute = before_execute
         self._errors: list[TransactionErrorRecord] = []
 
     @property
@@ -91,6 +95,8 @@ class TransactionProcessor:
         if transaction is None:
             return None
         try:
+            if self._before_execute is not None:
+                self._before_execute(transaction)
             self._execute(transaction)
         except TemporaryTransactionError as error:
             message = str(error).strip() or type(error).__name__
