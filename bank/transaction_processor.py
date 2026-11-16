@@ -1,12 +1,26 @@
 """Однопоточная обработка очереди с учебными курсами валют."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 
 from .accounts import BankAccount, Currency, PremiumAccount
-from .exceptions import BankError, InvalidOperationError
+from .exceptions import BankError, InvalidOperationError, TemporaryTransactionError
 from .transaction_queue import TransactionQueue
 from .transactions import Transaction, TransactionType
+
+
+@dataclass(frozen=True)
+class TransactionErrorRecord:
+    """Неизменяемая запись об одной неудачной попытке."""
+
+    transaction_id: str
+    attempt: int
+    occurred_at: datetime
+    error_type: str
+    message: str
+    retry_at: datetime | None
 
 
 class TransactionProcessor:
@@ -23,11 +37,20 @@ class TransactionProcessor:
         *,
         exchange_rates: Mapping[tuple[Currency, Currency], Decimal] | None = None,
         external_fee_rate: Decimal = Decimal("0.01"),
+        max_attempts: int = 3,
+        retry_delay: timedelta = timedelta(seconds=60),
+        external_preflight: Callable[[Transaction], None] | None = None,
     ):
         if not isinstance(queue, TransactionQueue):
             raise InvalidOperationError("Ожидается очередь TransactionQueue")
         if not isinstance(accounts, Mapping):
             raise InvalidOperationError("Счета должны быть переданы как отображение ID → счёт")
+        if type(max_attempts) is not int or max_attempts <= 0:
+            raise InvalidOperationError("Число попыток должно быть целым числом > 0")
+        if not isinstance(retry_delay, timedelta) or retry_delay <= timedelta(0):
+            raise InvalidOperationError("Задержка повторов должна быть положительным timedelta")
+        if external_preflight is not None and not callable(external_preflight):
+            raise InvalidOperationError("Проверка внешнего банка должна быть вызываемым объектом")
         if (
             not isinstance(external_fee_rate, Decimal)
             or not external_fee_rate.is_finite()
@@ -49,21 +72,66 @@ class TransactionProcessor:
         # Сохраняем доступ к актуальным счетам, без копирования их балансов.
         self._accounts = accounts
         self._external_fee_rate = external_fee_rate
+        self._max_attempts = max_attempts
+        self._retry_delay = retry_delay
+        # Проверка только доступности: она не должна отправлять перевод
+        # или менять балансы. TemporaryTransactionError гарантирует отсутствие списания.
+        self._external_preflight = external_preflight
+        self._errors: list[TransactionErrorRecord] = []
+
+    @property
+    def errors(self) -> tuple[TransactionErrorRecord, ...]:
+        """Снимок журнала: вызывающий код не может изменить внутренний список."""
+        return tuple(self._errors)
 
     def process_next(self) -> Transaction | None:
         """Обработать одну готовую операцию; банковский отказ сохранить в ней."""
+        occurred_at = self._queue.get_current_time()
         transaction = self._queue.get_next()
         if transaction is None:
             return None
         try:
             self._execute(transaction)
+        except TemporaryTransactionError as error:
+            message = str(error).strip() or type(error).__name__
+            retry_at = None
+            if transaction.attempts_count < self._max_attempts:
+                try:
+                    retry_at = occurred_at + self._retry_delay
+                except OverflowError:
+                    # Если назначенное время не представимо, завершаем отказом.
+                    pass
+            if retry_at is None:
+                transaction.mark_failed(message)
+            else:
+                transaction.mark_retry_pending(message)
+                # Новая запись получает обычный приоритет 0 и новое место в очереди.
+                self._queue.add(transaction, scheduled_at=retry_at)
+            self._record_error(transaction, error, message, occurred_at, retry_at)
         except BankError as error:
-            transaction.mark_failed(str(error))
-        except DecimalException:
-            transaction.mark_failed("Ошибка точности или диапазона денежного расчёта")
+            message = str(error).strip() or type(error).__name__
+            transaction.mark_failed(message)
+            self._record_error(transaction, error, message, occurred_at)
+        except DecimalException as error:
+            message = "Ошибка точности или диапазона денежного расчёта"
+            transaction.mark_failed(message)
+            self._record_error(transaction, error, message, occurred_at)
         else:
             transaction.mark_completed()
         return transaction
+
+    def _record_error(
+        self,
+        transaction: Transaction,
+        error: Exception,
+        message: str,
+        occurred_at: datetime,
+        retry_at: datetime | None = None,
+    ) -> None:
+        self._errors.append(TransactionErrorRecord(
+            transaction.transaction_id, transaction.attempts_count,
+            occurred_at, type(error).__name__, message, retry_at,
+        ))
 
     def process_all(self) -> list[Transaction]:
         """Обработать всё, что готово сейчас, не ожидая отложенных операций."""
@@ -116,6 +184,10 @@ class TransactionProcessor:
                 fee, exchange_rate=Decimal("1"),
                 recipient_amount=amount, recipient_currency=sender.currency,
             )
+            sender._ensure_active()
+            sender._validate_transfer_funds(amount + fee)
+            if self._external_preflight is not None:
+                self._external_preflight(transaction)
             sender.debit_transfer(amount, fee=fee)
         elif kind is TransactionType.INTERNAL_TRANSFER:
             recipient = self._get_account(transaction.recipient_account_id)

@@ -126,6 +126,7 @@ class Transaction:
         self._created_at = datetime.now(timezone.utc)
         self._updated_at = self._created_at
         self._completed_at: datetime | None = None
+        self._attempts_count = 0
 
     def set_calculation(
         self,
@@ -165,6 +166,8 @@ class Transaction:
             TransactionStatus.PROCESSING, (TransactionStatus.QUEUED,),
         )
         self._failure_reason = None
+
+        self._attempts_count += 1
 
     def mark_completed(self) -> None:
         """Зафиксировать успешное выполнение операции."""
@@ -282,3 +285,7 @@ class Transaction:
     @property
     def completed_at(self) -> datetime | None:
         return self._completed_at
+
+    @property
+    def attempts_count(self) -> int:
+        return self._attempts_count

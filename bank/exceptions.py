@@ -18,6 +18,10 @@ class InsufficientFundsError(BankError):
     """На счёте недостаточно средств."""
 
 
+class TemporaryTransactionError(BankError):
+    """Временный сбой до списания денег, допускающий повторную попытку."""
+
+
 class AuthenticationError(BankError):
     """Ошибка проверки учётных данных или сессии."""
 

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from bank.accounts import AccountStatus, BankAccount, Currency, PremiumAccount
-from bank.exceptions import InvalidOperationError
+from bank.exceptions import InvalidOperationError, TemporaryTransactionError
 from bank.transaction_processor import TransactionProcessor
 from bank.transaction_queue import TransactionQueue
 from bank.transactions import ExternalRecipient, Transaction, TransactionStatus, TransactionType
@@ -146,6 +146,107 @@ class TransactionProcessorTests(unittest.TestCase):
             with self.subTest(rates=rates):
                 with self.assertRaises(InvalidOperationError):
                     TransactionProcessor(self.queue, self.accounts, exchange_rates=rates)
+
+    def test_temporary_failure_then_success_without_double_debit(self):
+        calls = []
+
+        def preflight(transaction):
+            calls.append(transaction.transaction_id)
+            if len(calls) == 1:
+                raise TemporaryTransactionError("Банк временно недоступен")
+
+        processor = TransactionProcessor(self.queue, self.accounts, external_preflight=preflight)
+        transaction = self.operation(TransactionType.EXTERNAL_TRANSFER)
+        processor.process_all()
+        self.assertIs(transaction.status, TransactionStatus.QUEUED)
+        self.assertEqual(transaction.attempts_count, 1)
+        self.assertEqual(self.sender.balance, Decimal("2000"))
+        self.assertEqual(processor.errors[0].retry_at, self.now + timedelta(seconds=60))
+        self.assertEqual(processor.process_all(), [])
+        self.now += timedelta(seconds=59)
+        self.assertIsNone(processor.process_next())
+        self.now += timedelta(seconds=1)
+        processor.process_all()
+        self.assertIs(transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(transaction.attempts_count, 2)
+        self.assertIsNone(transaction.failure_reason)
+        self.assertEqual(self.sender.balance, Decimal("1899"))
+        self.assertEqual(len(processor.errors), 1)
+        self.assertEqual(processor.process_all(), [])
+        self.assertEqual(self.sender.balance, Decimal("1899"))
+
+    def test_retry_limit_is_three_attempts_total(self):
+        def unavailable(transaction):
+            raise TemporaryTransactionError("Нет связи")
+
+        processor = TransactionProcessor(self.queue, self.accounts, external_preflight=unavailable)
+        transaction = self.operation(TransactionType.EXTERNAL_TRANSFER)
+        for _ in range(3):
+            processor.process_all()
+            self.now += timedelta(seconds=60)
+        self.assertIs(transaction.status, TransactionStatus.FAILED)
+        self.assertEqual(transaction.attempts_count, 3)
+        self.assertEqual([record.attempt for record in processor.errors], [1, 2, 3])
+        self.assertIsNone(processor.errors[-1].retry_at)
+        self.assertEqual(self.sender.balance, Decimal("2000"))
+        self.assertEqual(len(self.queue), 0)
+
+    def test_permanent_failure_is_logged_without_retry(self):
+        transaction = self.operation(amount="3000")
+        self.processor.process_all()
+        self.assertIs(transaction.status, TransactionStatus.FAILED)
+        self.assertEqual(transaction.attempts_count, 1)
+        record = self.processor.errors[0]
+        self.assertEqual(record.transaction_id, transaction.transaction_id)
+        self.assertEqual(record.error_type, "InsufficientFundsError")
+        self.assertEqual(record.occurred_at, self.now)
+        self.assertIsNone(record.retry_at)
+        self.assertEqual(len(self.queue), 0)
+
+    def test_retry_can_be_cancelled(self):
+        def unavailable(transaction):
+            raise TemporaryTransactionError("Нет связи")
+
+        processor = TransactionProcessor(self.queue, self.accounts, external_preflight=unavailable)
+        transaction = self.operation(TransactionType.EXTERNAL_TRANSFER)
+        processor.process_all()
+        self.queue.cancel(transaction.transaction_id)
+        self.now += timedelta(seconds=60)
+        self.assertEqual(processor.process_all(), [])
+        self.assertEqual(transaction.attempts_count, 1)
+        self.assertEqual(self.sender.balance, Decimal("2000"))
+
+    def test_log_snapshot_and_records_cannot_be_changed(self):
+        snapshot = self.processor.errors
+        self.operation(amount="3000")
+        self.processor.process_all()
+        self.assertEqual(snapshot, ())
+        self.assertEqual(len(self.processor.errors), 1)
+        with self.assertRaises(AttributeError):
+            self.processor.errors[0].message = "changed"
+
+    def test_retry_settings_are_validated(self):
+        for kwargs in (
+            {"max_attempts": 0}, {"max_attempts": True},
+            {"retry_delay": timedelta(0)}, {"retry_delay": 60},
+            {"external_preflight": "not callable"},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(InvalidOperationError):
+                    TransactionProcessor(self.queue, self.accounts, **kwargs)
+
+    def test_no_retry_when_max_attempts_is_one(self):
+        def unavailable(transaction):
+            raise TemporaryTransactionError()
+
+        processor = TransactionProcessor(
+            self.queue, self.accounts, max_attempts=1, external_preflight=unavailable,
+        )
+        transaction = self.operation(TransactionType.EXTERNAL_TRANSFER)
+        processor.process_all()
+        self.assertIs(transaction.status, TransactionStatus.FAILED)
+        self.assertEqual(transaction.failure_reason, "TemporaryTransactionError")
+        self.assertIsNone(processor.errors[0].retry_at)
 
     def test_calculation_is_validated_before_changing_transaction(self):
         transaction = self.operation()

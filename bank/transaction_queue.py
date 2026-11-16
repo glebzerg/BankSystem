@@ -65,13 +65,17 @@ class TransactionQueue:
         )
         self._sequence += 1
 
+    def get_current_time(self) -> datetime:
+        """Вернуть время из часов очереди для согласованного планирования повторов."""
+        return self._validate_time(self._now())
+
     def get_next(self) -> Transaction | None:
         """Забрать готовую операцию и отметить начало обработки.
 
         None означает, что сейчас нет готовых операций. При этом
         в очереди могут оставаться отложенные транзакции.
         """
-        current_time = self._validate_time(self._now())
+        current_time = self.get_current_time()
         # Если поручение отменили напрямую, оно больше не ожидает обработки.
         self._entries = {
             transaction_id: entry
