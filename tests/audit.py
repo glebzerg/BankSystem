@@ -87,6 +87,14 @@ class AuditLogTests(unittest.TestCase):
         with self.assertRaises(InvalidOperationError):
             AuditLog(now=self.current)
 
+    def test_explicit_event_time_overrides_clock_and_is_validated(self):
+        event_time = self.current - timedelta(hours=1)
+        record = self.log.add(AuditLevel.INFO, "event", "Событие", occurred_at=event_time)
+        self.assertEqual(record.occurred_at, event_time)
+        with self.assertRaises(InvalidOperationError):
+            self.log.add(AuditLevel.INFO, "event", "Событие", occurred_at=datetime(2026, 11, 17))
+        self.assertEqual(self.log.records, (record,))
+
     def test_filters_work_separately_and_together(self):
         first = self.log.add(AuditLevel.INFO, "completed", "Успех", client_id="c1",
                              transaction_id="t1")

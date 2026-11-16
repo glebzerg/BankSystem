@@ -14,6 +14,7 @@ from .accounts import (
     SavingsAccount,
 )
 from .clients import Client, ClientStatus
+from .audit import AuditLevel, AuditLog
 from .exceptions import (
     AuthenticationError,
     ClientBlockedError,
@@ -36,10 +37,14 @@ class Bank:
         now: Callable[[], datetime] | None = None,
         exchange_rates: Mapping[tuple[Currency, Currency], Decimal] | None = None,
         external_preflight: Callable[[Transaction], None] | None = None,
+        audit_log: AuditLog | None = None,
     ):
         if now is not None and not callable(now):
             raise InvalidOperationError("Источник времени должен быть вызываемым объектом")
+        if audit_log is not None and not isinstance(audit_log, AuditLog):
+            raise InvalidOperationError("Ожидается журнал AuditLog")
         self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
+        self._audit_log = audit_log if audit_log is not None else AuditLog(now=self._get_current_time)
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
@@ -112,6 +117,7 @@ class Bank:
             or not client_id.strip()
             or not isinstance(password, str)
         ):
+            self._record_failed_login(None)
             raise AuthenticationError(
                 "ID и пароль должны быть строками, ID не должен быть пустым"
             )
@@ -119,9 +125,11 @@ class Bank:
         client = self._clients.get(client_id)
 
         if client is None:
+            self._record_failed_login(None)
             raise AuthenticationError("Неверный ID клиента или пароль")
 
         if client.status is ClientStatus.BLOCKED:
+            self._record_failed_login(client.client_id)
             raise ClientBlockedError("Доступ клиента заблокирован")
 
         salt, stored_hash = self._credentials[client_id]
@@ -141,6 +149,7 @@ class Bank:
                     if owner_id != client_id
                 }
 
+                self._record_failed_login(client_id)
                 self._record_suspicious_activity(
                     "login_blocked", client_id,
                     "Клиент заблокирован после трёх неверных попыток входа",
@@ -150,6 +159,7 @@ class Bank:
                     "Доступ заблокирован после трёх неверных попыток"
                 )
 
+            self._record_failed_login(client_id)
             raise AuthenticationError("Неверный ID клиента или пароль")
 
         self._failed_attempts[client_id] = 0
@@ -357,17 +367,29 @@ class Bank:
             )
         return current.astimezone(self.BANK_TIMEZONE)
 
+    def _record_failed_login(self, client_id: str | None) -> None:
+        """Записать отказ входа без пароля, токена и непроверенного ID."""
+        self._audit_log.add(
+            AuditLevel.WARNING, "login_failed", "Неудачная попытка входа",
+            client_id=client_id, occurred_at=self._get_current_time(),
+        )
+
     def _record_suspicious_activity(
         self, event_type: str, client_id: str | None, description: str,
         *, occurred_at: datetime | None = None,
     ) -> None:
-        """Сохранить подозрительное действие в памяти банка."""
+        """Сохранить событие в прежнем журнале и в общем аудите."""
+        current = occurred_at if occurred_at is not None else self._get_current_time()
         self._suspicious_events.append({
-            "time": occurred_at if occurred_at is not None else self._get_current_time(),
+            "time": current,
             "event_type": event_type,
             "client_id": client_id,
             "description": description,
         })
+        self._audit_log.add(
+            AuditLevel.ERROR if event_type == "login_blocked" else AuditLevel.WARNING,
+            event_type, description, client_id=client_id, occurred_at=current,
+        )
 
     def _ensure_operations_allowed(self, client_id: str | None = None) -> None:
         """Запретить изменение данных с 00:00 до 05:00 по Москве."""

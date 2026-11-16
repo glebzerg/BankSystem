@@ -85,10 +85,11 @@ class AuditLog:
         *,
         client_id: str | None = None,
         transaction_id: str | None = None,
+        occurred_at: datetime | None = None,
     ) -> AuditRecord:
         """Создать и сохранить запись; некорректные данные не меняют журнал."""
         record = AuditRecord(
-            occurred_at=self._now(),
+            occurred_at=occurred_at if occurred_at is not None else self._now(),
             level=level,
             event_type=event_type,
             description=description,
