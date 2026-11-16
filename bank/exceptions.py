@@ -2,6 +2,10 @@ class BankError(Exception):
     """Базовая ошибка банковской системы."""
 
 
+class AuditWriteError(BankError):
+    """Не удалось сохранить событие аудита в файл."""
+
+
 class AccountFrozenError(BankError):
     """Операция над замороженным счётом."""
 
