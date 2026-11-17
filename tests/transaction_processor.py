@@ -231,10 +231,32 @@ class TransactionProcessorTests(unittest.TestCase):
             {"retry_delay": timedelta(0)}, {"retry_delay": 60},
             {"external_preflight": "not callable"},
             {"on_completed": "not callable"},
+            {"on_error": "not callable"},
         ):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(InvalidOperationError):
                     TransactionProcessor(self.queue, self.accounts, **kwargs)
+
+    def test_error_callback_observes_saved_error_and_final_attempt_state(self):
+        observed = []
+
+        def remember(transaction, error):
+            self.assertIs(processor.errors[-1], error)
+            observed.append((transaction.status, error.retry_at))
+
+        def unavailable(transaction):
+            raise TemporaryTransactionError("Нет связи")
+
+        processor = TransactionProcessor(self.queue, self.accounts,
+                                         on_error=remember, external_preflight=unavailable)
+        self.operation(amount="3000")
+        self.operation(TransactionType.EXTERNAL_TRANSFER)
+        self.operation()
+        processor.process_all()
+        self.assertEqual(observed, [
+            (TransactionStatus.FAILED, None),
+            (TransactionStatus.QUEUED, self.now + timedelta(seconds=60)),
+        ])
 
     def test_completion_callback_runs_only_after_success(self):
         completed = []

@@ -42,6 +42,7 @@ class TransactionProcessor:
         external_preflight: Callable[[Transaction], None] | None = None,
         before_execute: Callable[[Transaction], None] | None = None,
         on_completed: Callable[[Transaction], None] | None = None,
+        on_error: Callable[[Transaction, TransactionErrorRecord], None] | None = None,
     ):
         if not isinstance(queue, TransactionQueue):
             raise InvalidOperationError("Ожидается очередь TransactionQueue")
@@ -57,6 +58,8 @@ class TransactionProcessor:
             raise InvalidOperationError("Проверка операции должна быть вызываемым объектом")
         if on_completed is not None and not callable(on_completed):
             raise InvalidOperationError("Обработчик успеха должен быть вызываемым объектом")
+        if on_error is not None and not callable(on_error):
+            raise InvalidOperationError("Обработчик ошибки должен быть вызываемым объектом")
         if (
             not isinstance(external_fee_rate, Decimal)
             or not external_fee_rate.is_finite()
@@ -85,6 +88,7 @@ class TransactionProcessor:
         self._external_preflight = external_preflight
         self._before_execute = before_execute
         self._on_completed = on_completed
+        self._on_error = on_error
         self._errors: list[TransactionErrorRecord] = []
 
     @property
@@ -141,10 +145,13 @@ class TransactionProcessor:
         occurred_at: datetime,
         retry_at: datetime | None = None,
     ) -> None:
-        self._errors.append(TransactionErrorRecord(
+        record = TransactionErrorRecord(
             transaction.transaction_id, transaction.attempts_count,
             occurred_at, type(error).__name__, message, retry_at,
-        ))
+        )
+        self._errors.append(record)
+        if self._on_error is not None:
+            self._on_error(transaction, record)
 
     def process_all(self) -> list[Transaction]:
         """Обработать всё, что готово сейчас, не ожидая отложенных операций."""

@@ -1,9 +1,10 @@
 import hashlib
 import hmac
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 
 from .accounts import (
     AccountStatus,
@@ -16,12 +17,14 @@ from .accounts import (
 from .clients import Client, ClientStatus
 from .audit import AuditLevel, AuditLog
 from .exceptions import (
+    AuditWriteError,
+    BankError,
     AuthenticationError,
     ClientBlockedError,
     HighRiskTransactionError,
     InvalidOperationError,
 )
-from .transaction_processor import TransactionProcessor
+from .transaction_processor import TransactionErrorRecord, TransactionProcessor
 from .risk import RiskAnalyzer, RiskAssessment, RiskLevel
 from .transaction_queue import TransactionQueue
 from .transactions import ExternalRecipient, Transaction, TransactionType
@@ -51,7 +54,7 @@ class Bank:
         self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
         self._audit_log = audit_log if audit_log is not None else AuditLog(now=self._get_current_time)
         self._risk_analyzer = risk_analyzer if risk_analyzer is not None else RiskAnalyzer()
-        self._transaction_risks: dict[str, RiskAssessment] = {}
+        self._operation_risks: dict[str, RiskAssessment] = {}
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
@@ -73,7 +76,8 @@ class Bank:
             exchange_rates=exchange_rates,
             external_preflight=external_preflight,
             before_execute=self._validate_transaction_execution,
-            on_completed=self._record_completed_transfer,
+            on_completed=self._record_completed_transaction,
+            on_error=self._record_transaction_error,
         )
 
     @staticmethod
@@ -493,16 +497,25 @@ class Bank:
 
     def _assess_transaction_risk(self, transaction: Transaction, owner_id: str) -> None:
         """Оценить текущую попытку до списания; высокий риск — окончательный отказ."""
-        current = self._get_current_time()
-        result = self._risk_analyzer.analyze(
-            transaction.amount, transaction.currency, occurred_at=current,
-            client_id=owner_id, operation_id=transaction.transaction_id,
+        self._assess_operation_risk(
+            transaction.amount, transaction.currency, owner_id, transaction.transaction_id,
             recipient=self._transfer_recipient(transaction),
         )
-        self._risk_analyzer.record_attempt(
-            owner_id, transaction.transaction_id, occurred_at=current,
+
+    def _assess_operation_risk(
+        self, amount: Decimal, currency: Currency, owner_id: str, operation_id: str,
+        *, recipient: str | ExternalRecipient | None = None,
+    ) -> None:
+        """Общая проверка для очереди и прямых операций; одна история клиента."""
+        current = self._get_current_time()
+        result = self._risk_analyzer.analyze(
+            amount, currency, occurred_at=current,
+            client_id=owner_id, operation_id=operation_id, recipient=recipient,
         )
-        self._transaction_risks[transaction.transaction_id] = result
+        self._risk_analyzer.record_attempt(
+            owner_id, operation_id, occurred_at=current,
+        )
+        self._operation_risks[operation_id] = result
         description = (
             f"Уровень риска: {result.level.value}; баллы: {result.score}; "
             f"причины: {', '.join(result.reasons) or 'нет'}"
@@ -513,18 +526,39 @@ class Bank:
         )
         self._audit_log.add(
             level, "risk_blocked" if blocked else "risk_assessed", description,
-            client_id=owner_id, transaction_id=transaction.transaction_id, occurred_at=current,
+            client_id=owner_id, transaction_id=operation_id, occurred_at=current,
         )
         if blocked:
             raise HighRiskTransactionError(f"Операция отклонена из-за высокого риска. {description}")
 
-    def _record_completed_transfer(self, transaction: Transaction) -> None:
+    def _record_completed_transaction(self, transaction: Transaction) -> None:
         """Вызывается процессором только после успешного завершения операции."""
         recipient = self._transfer_recipient(transaction)
         if recipient is not None:
             self._risk_analyzer.record_successful_transfer(
                 self._transaction_owners[transaction.transaction_id], recipient,
             )
+        self._audit_log.add(
+            AuditLevel.INFO, "transaction_completed",
+            f"Операция {transaction.transaction_type.value} выполнена; попытка {transaction.attempts_count}",
+            client_id=self._transaction_owners[transaction.transaction_id],
+            transaction_id=transaction.transaction_id, occurred_at=self._get_current_time(),
+        )
+
+    def _record_transaction_error(self, transaction: Transaction, error: TransactionErrorRecord) -> None:
+        """Одна запись на неудачную попытку; неудача аудита не меняет её результат."""
+        # Если отказ вызван самим хранилищем аудита, повторно писать туда не пытаемся.
+        if error.error_type == AuditWriteError.__name__:
+            return
+        retrying = error.retry_at is not None
+        self._audit_log.add(
+            AuditLevel.WARNING if retrying else AuditLevel.ERROR,
+            "transaction_retry_scheduled" if retrying else "transaction_failed",
+            f"Попытка {error.attempt}: {error.error_type}: {error.message}"
+            + (f"; повтор: {error.retry_at.isoformat()}" if retrying else ""),
+            client_id=self._transaction_owners[transaction.transaction_id],
+            transaction_id=transaction.transaction_id, occurred_at=error.occurred_at,
+        )
 
     def process_transactions(self) -> int:
         """Служебный запуск банка: обработать готовые операции всех клиентов.
@@ -567,6 +601,11 @@ class Bank:
         transaction = self._get_owned_transaction(session_token, transaction_id)
         self._ensure_operations_allowed(self._transaction_owners[transaction_id])
         self._transaction_queue.cancel(transaction.transaction_id)
+        self._audit_log.add(
+            AuditLevel.INFO, "transaction_cancelled", "Поручение отменено клиентом",
+            client_id=self._transaction_owners[transaction_id], transaction_id=transaction_id,
+            occurred_at=self._get_current_time(),
+        )
 
     def get_transaction_errors(self, session_token: str) -> list[dict]:
         """Вернуть журнал только собственных поручений."""
@@ -586,7 +625,7 @@ class Bank:
 
     def _transaction_info(self, transaction: Transaction) -> dict:
         external = transaction.external_recipient
-        risk = self._transaction_risks.get(transaction.transaction_id)
+        risk = self._operation_risks.get(transaction.transaction_id)
         return {
             "transaction_id": transaction.transaction_id,
             "transaction_type": transaction.transaction_type.value,
@@ -614,35 +653,71 @@ class Bank:
             },
         }
 
+    @contextmanager
+    def _direct_operation(
+        self, account: BankAccount, operation_type: str, *, amount: Decimal | None = None,
+    ) -> Iterator[None]:
+        """Общий аудит и защита прямых операций без создания поручения в очереди.
+
+        Начисление процентов вызывается без amount: аудит есть, но доход
+        не увеличивает частоту клиентских денежных поручений.
+        """
+        owner_id = self._account_owners[account.account_id]
+        operation_id = f"direct:{secrets.token_hex(16)}"
+        details = f"{operation_type}; счёт {account.account_id}"
+        self._audit_log.add(
+            AuditLevel.INFO, "operation_started", details,
+            client_id=owner_id, transaction_id=operation_id, occurred_at=self._get_current_time(),
+        )
+        try:
+            self._ensure_operations_allowed(owner_id)
+            if amount is not None:
+                self._assess_operation_risk(amount, account.currency, owner_id, operation_id)
+            yield
+        except AuditWriteError:
+            raise
+        except (BankError, DecimalException) as error:
+            self._audit_log.add(
+                AuditLevel.ERROR, "operation_failed", f"{details}; {type(error).__name__}: {error}",
+                client_id=owner_id, transaction_id=operation_id, occurred_at=self._get_current_time(),
+            )
+            raise
+        else:
+            # Вне обработчика ошибок операции: сбой записи не отменяет успех.
+            self._audit_log.add(
+                AuditLevel.INFO, "operation_completed", details,
+                client_id=owner_id, transaction_id=operation_id, occurred_at=self._get_current_time(),
+            )
+
     def deposit(self, session_token: str, account_id: str, amount: Decimal) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed(self._account_owners[account.account_id])
-        account.deposit(amount)
+        with self._direct_operation(account, "deposit", amount=amount):
+            account.deposit(amount)
 
     def withdraw(self, session_token: str, account_id: str, amount: Decimal) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed(self._account_owners[account.account_id])
-        account.withdraw(amount)
+        with self._direct_operation(account, "withdrawal", amount=amount):
+            account.withdraw(amount)
 
     def invest(
         self, session_token: str, account_id: str, asset_type: str, amount: Decimal,
     ) -> None:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed(self._account_owners[account.account_id])
-        if not isinstance(account, InvestmentAccount):
-            raise InvalidOperationError(
-                "Инвестирование доступно только инвестиционному счёту"
-            )
-        account.invest(asset_type, amount)
+        with self._direct_operation(account, "investment", amount=amount):
+            if not isinstance(account, InvestmentAccount):
+                raise InvalidOperationError(
+                    "Инвестирование доступно только инвестиционному счёту"
+                )
+            account.invest(asset_type, amount)
 
     def apply_monthly_interest(self, session_token: str, account_id: str) -> Decimal:
         account = self._get_owned_account(session_token, account_id)
-        self._ensure_operations_allowed(self._account_owners[account.account_id])
-        if not isinstance(account, SavingsAccount):
-            raise InvalidOperationError(
-                "Начисление процентов доступно только накопительному счёту"
-            )
-        return account.apply_monthly_interest()
+        with self._direct_operation(account, "monthly_interest"):
+            if not isinstance(account, SavingsAccount):
+                raise InvalidOperationError(
+                    "Начисление процентов доступно только накопительному счёту"
+                )
+            return account.apply_monthly_interest()
 
     def _get_authenticated_client(self, session_token: str) -> Client:
         """Проверить сессию и текущий статус клиента."""

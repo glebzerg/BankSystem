@@ -91,7 +91,7 @@ class BankRiskTests(unittest.TestCase):
         self.assertEqual(errors[0]["error_type"], "HighRiskTransactionError")
         self.assertIsNone(errors[0]["retry_at"])
         events = self.log.filter(transaction_id=identifier)
-        self.assertEqual(len(events), 1)
+        self.assertEqual([event.event_type for event in events], ["risk_blocked", "transaction_failed"])
         self.assertEqual(events[0].event_type, "risk_blocked")
         self.assertEqual(events[0].level.value, "error")
         self.now += timedelta(minutes=10)

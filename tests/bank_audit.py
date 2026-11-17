@@ -79,7 +79,7 @@ class BankAuditTests(unittest.TestCase):
         self.current = datetime(2026, 11, 17, 1, tzinfo=Bank.BANK_TIMEZONE)
         with self.assertRaises(InvalidOperationError):
             self.bank.deposit(self.token, account["account_id"], Decimal("10"))
-        record = self.log.records[-1]
+        record = next(record for record in self.log.records if record.event_type == "night_operation")
         legacy = self.bank.get_suspicious_events(self.token)[0]
         self.assertEqual(record.event_type, "night_operation")
         self.assertIs(record.level, AuditLevel.WARNING)
