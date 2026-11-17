@@ -3,7 +3,7 @@
 from collections import Counter
 from datetime import datetime
 
-from .audit import AuditLog
+from .audit import AuditLog, AuditRecord
 from .exceptions import InvalidOperationError
 from .risk import RiskLevel
 
@@ -15,7 +15,7 @@ class AuditReports:
     границы включены. Одна операция учитывается один раз с максимальным
     уровнем риска за период. При равенстве уровня выбираем больший балл,
     затем более позднюю оценку. Результаты за пределами периода не учитываются.
-    Операции без оценки риска (например, начисление процентов) не включаются.
+    В отчёты о риске операции без оценки (например, начисление процентов) не включаются.
     """
 
     _LEVEL_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -33,12 +33,17 @@ class AuditReports:
             raise InvalidOperationError("Ожидается журнал AuditLog")
         self._audit_log = audit_log
 
+    def _client_records(
+        self, client_id: str, *, start_at: datetime | None, end_at: datetime | None,
+    ) -> tuple[AuditRecord, ...]:
+        if not isinstance(client_id, str) or not client_id.strip():
+            raise InvalidOperationError("ID клиента должен быть непустой строкой")
+        return self._audit_log.filter(client_id=client_id, start_at=start_at, end_at=end_at)
+
     def _operation_rows(
         self, client_id: str, *, start_at: datetime | None, end_at: datetime | None,
     ) -> list[dict]:
-        if not isinstance(client_id, str) or not client_id.strip():
-            raise InvalidOperationError("ID клиента должен быть непустой строкой")
-        records = self._audit_log.filter(client_id=client_id, start_at=start_at, end_at=end_at)
+        records = self._client_records(client_id, start_at=start_at, end_at=end_at)
         rows = {}
         for record in sorted(records, key=lambda item: item.occurred_at):
             identifier = record.transaction_id
@@ -99,4 +104,30 @@ class AuditReports:
             "highest_risk": max((row["risk_level"] for row in rows), key=self._LEVEL_RANK.get,
                                 default=None),
             "reason_counts": dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0]))),
+        }
+
+    def error_statistics(
+        self, client_id: str, *, start_at: datetime | None = None, end_at: datetime | None = None,
+    ) -> dict:
+        """Ошибки денежных операций по времени события, границы периода включены.
+
+        Повтор с последующим успехом — неудачная попытка, но не окончательный
+        отказ. risk_blocked не считается второй ошибкой той же попытки.
+        Ошибки входа и незаписанные события в эту статистику не входят.
+        """
+        records = self._client_records(client_id, start_at=start_at, end_at=end_at)
+        errors = [record for record in records if record.error_type is not None
+                  and record.event_type in (
+                      "transaction_failed", "transaction_retry_scheduled", "operation_failed",
+                  )]
+        failed = {record.transaction_id for record in errors
+                  if record.transaction_id is not None
+                  and record.event_type in ("transaction_failed", "operation_failed")}
+        blocked = {record.transaction_id for record in records
+                   if record.transaction_id is not None and record.event_type == "risk_blocked"}
+        return {
+            "failed_attempts": len(errors),
+            "failed_operations": len(failed),
+            "risk_blocked_operations": len(blocked),
+            "by_error_type": dict(sorted(Counter(record.error_type for record in errors).items())),
         }

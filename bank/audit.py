@@ -40,6 +40,7 @@ class AuditRecord:
     client_id: str | None = None
     transaction_id: str | None = None
     risk: RiskAssessment | None = None
+    error_type: str | None = None
 
     def __post_init__(self) -> None:
         _validate_time(self.occurred_at)
@@ -56,6 +57,7 @@ class AuditRecord:
         for label, value in (
             ("ID клиента", self.client_id),
             ("ID транзакции", self.transaction_id),
+            ("Тип ошибки", self.error_type),
         ):
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise InvalidOperationError(f"{label} должен быть непустой строкой или None")
@@ -91,6 +93,7 @@ class AuditLog:
         transaction_id: str | None = None,
         occurred_at: datetime | None = None,
         risk: RiskAssessment | None = None,
+        error_type: str | None = None,
     ) -> AuditRecord:
         """Создать и сохранить запись; некорректные данные не меняют журнал."""
         record = AuditRecord(
@@ -101,6 +104,7 @@ class AuditLog:
             client_id=client_id,
             transaction_id=transaction_id,
             risk=risk,
+            error_type=error_type,
         )
         if self._file_path is not None:
             self._append_to_file(record)
@@ -127,6 +131,8 @@ class AuditLog:
                 "score": record.risk.score,
                 "reasons": record.risk.reasons,
             }
+        if record.error_type is not None:
+            data["error_type"] = record.error_type
         try:
             line = json.dumps(data, ensure_ascii=False) + "\n"
             with self._file_path.open("a", encoding="utf-8") as stream:

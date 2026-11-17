@@ -561,6 +561,7 @@ class Bank:
             + (f"; повтор: {error.retry_at.isoformat()}" if retrying else ""),
             client_id=self._transaction_owners[transaction.transaction_id],
             transaction_id=transaction.transaction_id, occurred_at=error.occurred_at,
+            error_type=error.error_type,
         )
 
     def process_transactions(self) -> int:
@@ -644,6 +645,15 @@ class Bank:
             client.client_id, start_at=start_at, end_at=end_at,
         )
 
+    def get_error_statistics(
+        self, session_token: str, *, start_at: datetime | None = None, end_at: datetime | None = None,
+    ) -> dict:
+        """Статистика записанных ошибок денежных операций текущего клиента."""
+        client = self._get_authenticated_client(session_token)
+        return self._audit_reports.error_statistics(
+            client.client_id, start_at=start_at, end_at=end_at,
+        )
+
     def _transaction_info(self, transaction: Transaction) -> dict:
         external = transaction.external_recipient
         risk = self._operation_risks.get(transaction.transaction_id)
@@ -701,6 +711,7 @@ class Bank:
             self._audit_log.add(
                 AuditLevel.ERROR, "operation_failed", f"{details}; {type(error).__name__}: {error}",
                 client_id=owner_id, transaction_id=operation_id, occurred_at=self._get_current_time(),
+                error_type=type(error).__name__,
             )
             raise
         else:
