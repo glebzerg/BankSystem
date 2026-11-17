@@ -330,7 +330,7 @@ bank = Bank(
 повторно проверяются владелец и блокировка участников; счета проверяют
 заморозку, закрытие и доступные средства. Время планирования требует часовой пояс.
 
-Демонстрация `tests.day4` создаёт ровно 10 поручений. Для этого пакетного сценария
+Демонстрация `examples.day4` создаёт ровно 10 поручений. Для этого пакетного сценария
 задан `RiskAnalyzer(frequency_limit=10)`; обычный банк использует порог 5 операций
 за минуту. Сначала выполняются готовые операции, затем учебные часы переводятся на минуту для повтора и
 ещё на минуту для отложенного перевода. Реального ожидания нет.
@@ -349,7 +349,7 @@ bank = Bank(
 Чтобы включить файл, передайте журнал банку:
 
 ```python
-from bank.audit import AuditLevel, AuditLog
+from bank.monitoring.audit import AuditLevel, AuditLog
 from bank.bank import Bank
 
 audit = AuditLog(file_path="audit.jsonl")
@@ -412,7 +412,7 @@ errors = bank.get_error_statistics(token)
 Временный сбой с последующим успехом увеличивает только число неудачных попыток.
 Ошибки входа и незаписанные события в эту статистику не входят.
 
-Демонстрация `tests.day5` создаёт 8 поручений: 5 успешных, 2 отказа и 1 отмена.
+Демонстрация `examples.day5` создаёт 8 поручений: 5 успешных, 2 отказа и 1 отмена.
 Также выполняется прямое пополнение и отклоняется ночное снятие.
 Профиль содержит 8 оценённых операций: 4 низкого, 3 среднего и 1 высокого риска.
 Статистика показывает 4 неудачные попытки, 3 окончательных отказа и 1 блокировку
@@ -423,7 +423,7 @@ errors = bank.get_error_statistics(token)
 
 ## Демонстрационная программа — день 6
 
-Вся демонстрация находится в `tests/day6.py` и использует готовые методы банка.
+Вся демонстрация находится в `examples/day6.py` и использует готовые методы банка.
 Создаются 5 клиентов и 10 счетов четырёх типов, все суммы в RUB.
 Данные фиксированы, время управляемое, случайных сценариев и реального ожидания нет.
 
@@ -447,7 +447,7 @@ errors = bank.get_error_statistics(token)
 не выполняют поручения и не читают банк повторно.
 
 ```python
-from bank.report_builder import ReportBuilder
+from bank.reporting.builder import ReportBuilder
 
 builder = ReportBuilder(bank)
 client_report = builder.build_client_report(token)
@@ -507,7 +507,7 @@ JSON, каждый CSV и каждый PNG заменяются отдельно
 Для разных отчётов используйте разные папки. Ошибка записи вызывает
 `ReportExportError`; некорректные данные — `InvalidOperationError`.
 
-Демонстрация `tests.day7` создаёт 3 клиентов, 6 счетов и 5 поручений:
+Демонстрация `examples.day7` создаёт 3 клиентов, 6 счетов и 5 поручений:
 2 успешных и 3 отказа. Также показывает прямое пополнение, инвестицию и проценты.
 Итоги банка: **18909 RUB и 200 USD**, комиссия успешных поручений — **1 RUB**.
 Для Ивана свободные деньги — **11899 RUB**, с портфелем — **12399 RUB**;
@@ -524,63 +524,46 @@ JSON, каждый CSV и каждый PNG заменяются отдельно
 BankSystem/
 ├── bank/
 │   ├── __init__.py
-│   ├── accounts.py      # Классы счетов, валюты и статусы
-│   ├── clients.py       # Клиенты и их статусы
-│   ├── bank.py          # Управление банком, доступ и аналитика
-│   ├── transactions.py  # Поручения, типы и жизненный цикл
-│   ├── transaction_queue.py     # Приоритеты, задержка и отмена
-│   ├── transaction_processor.py # Выполнение, комиссии, обмен и повторы
-│   ├── audit.py         # Записи аудита, фильтры и JSONL
-│   ├── risk.py          # Правила риска и история активности
-│   ├── audit_reports.py # Подозрительные операции, профиль и ошибки
-│   ├── balance_history.py # Неизменяемые точки фактического баланса
-│   ├── report_builder.py # Снимки трёх типов отчётов
-│   ├── report_text.py    # Русские таблицы и сводки
-│   ├── report_export.py  # JSON и CSV
-│   ├── report_charts.py  # Диаграммы и сохранение PNG
-│   └── exceptions.py    # Исключения банковской системы
+│   ├── bank.py                 # Центральное управление банком
+│   ├── exceptions.py           # Общие исключения
+│   ├── models/
+│   │   ├── accounts.py         # Типы счетов
+│   │   ├── clients.py          # Клиенты
+│   │   ├── transactions.py     # Модель поручения
+│   │   └── balance_history.py  # Точки истории баланса
+│   ├── processing/
+│   │   ├── queue.py            # Очередь, приоритеты и задержки
+│   │   └── processor.py        # Выполнение и повторы
+│   ├── monitoring/
+│   │   ├── audit.py            # Журнал аудита
+│   │   └── risk.py             # Анализ риска
+│   └── reporting/
+│       ├── audit_reports.py    # Аудиторские расчёты
+│       ├── builder.py          # Снимки отчётов
+│       ├── text.py             # Текстовые таблицы
+│       ├── export.py           # JSON и CSV
+│       └── charts.py           # Диаграммы и PNG
 ├── tests/
-│   ├── __init__.py
-│   ├── day1.py          # Демонстрация базового счёта
-│   ├── day2.py          # Общая демонстрация новых типов счетов
-│   ├── day3.py          # Демонстрация системы Bank
-│   ├── day4.py          # Десять транзакций через Bank
-│   ├── day5.py          # Аудит, риск и три отчёта
-│   ├── day6.py          # 5 клиентов, 10 счетов, 30 транзакций и отчёты
-│   ├── day7.py          # Три отчёта, экспорт и графики
-│   ├── balance_history.py
-│   ├── report_builder.py
-│   ├── report_text.py
-│   ├── report_export.py
-│   ├── report_charts.py
-│   ├── balance_charts.py
-│   ├── audit.py
-│   ├── risk.py
-│   ├── risk_history.py
-│   ├── bank_audit.py
-│   ├── bank_risk.py
-│   ├── operation_audit.py
-│   ├── audit_reports.py
-│   ├── error_statistics.py
-│   ├── transactions.py
-│   ├── transaction_queue.py
-│   ├── transaction_processor.py
-│   ├── transfers.py
-│   ├── bank_transactions.py
-│   ├── premium.py       # Подробные проверки премиального счёта
-│   ├── savings.py       # Подробные проверки накопительного счёта
-│   ├── authentication.py
-│   ├── opening.py
-│   ├── account_management.py
-│   ├── night_operations.py
-│   ├── security_events.py
-│   ├── searching.py
-│   ├── balances.py
-│   └── ranking.py       # Автоматические проверки на unittest
+│   ├── models/                 # Модели
+│   ├── processing/             # Очередь, процессор и переводы
+│   ├── monitoring/             # Аудит и правила риска
+│   ├── reporting/              # Отчёты, экспорт и графики
+│   └── integration/            # Совместная работа компонентов Bank
+├── examples/
+│   ├── day1.py ... day7.py     # Демонстрации семи этапов
+│   ├── savings.py              # Накопительный счёт
+│   └── premium.py              # Премиальный счёт
+├── reports/                    # Сгенерированные отчёты и графики
 ├── .gitignore
-├── requirements.txt     # matplotlib для графиков
+├── requirements.txt
 └── README.md
 ```
+
+В каждом Python-пакете есть `__init__.py` (в дереве показан только корневой).
+Близкие тесты объединены: открытие и управление счетами — в
+`tests/integration/test_account_management.py`, балансы и рейтинг — в
+`tests/integration/test_bank_analytics.py`, диаграммы — в
+`tests/reporting/test_charts.py`.
 
 ## Запуск
 
@@ -601,15 +584,15 @@ py -m venv .venv
 Запустите нужный модуль:
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m tests.day1
-.\.venv\Scripts\python.exe -B -m tests.savings
-.\.venv\Scripts\python.exe -B -m tests.premium
-.\.venv\Scripts\python.exe -B -m tests.day2
-.\.venv\Scripts\python.exe -B -m tests.day3
-.\.venv\Scripts\python.exe -X utf8 -B -m tests.day4
-.\.venv\Scripts\python.exe -X utf8 -B -m tests.day5
-.\.venv\Scripts\python.exe -X utf8 -B -m tests.day6
-.\.venv\Scripts\python.exe -X utf8 -B -m tests.day7
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day1
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.savings
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.premium
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day2
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day3
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day4
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day5
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day6
+.\.venv\Scripts\python.exe -X utf8 -B -m examples.day7
 ```
 
 Активация окружения для этих команд не требуется.
@@ -620,7 +603,9 @@ py -m venv .venv
 
 ## Проверки
 
-В `tests` находятся демонстрации с `assert` и автоматические тесты `unittest`.
+В `examples` находятся демонстрации с `assert`, а в `tests` — автоматические
+тесты `unittest`, сгруппированные по подсистемам. Все тестовые модули имеют
+префикс `test_`.
 
 - `day1.py` — базовые операции и ограничения замороженного счёта.
 - `savings.py` — снятие, неснижаемый остаток, пополнение и проценты.
@@ -650,12 +635,13 @@ py -m venv .venv
 Для запуска всех автоматических тестов:
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest discover -s tests -t . -p "*.py" -v
+.\.venv\Scripts\python.exe -X utf8 -B -m unittest discover -s tests -t . -v
 ```
 
-Шаблон `*.py` нужен, поскольку файлы автоматических тестов не имеют
-стандартного префикса `test_`. Команда запускает классы `unittest`,
-но не вызывает `main()` демонстраций — их запускают отдельно.
+Стандартный поиск `unittest` находит все 233 теста без специального шаблона.
+Команда не запускает `main()` демонстраций — их запускают отдельно из `examples`.
+Например, одну подсистему можно проверить командой
+`python -m unittest discover -s tests/reporting -t . -v`.
 
 Не запускайте проверки с флагом `-O`: он отключает инструкции `assert`.
 

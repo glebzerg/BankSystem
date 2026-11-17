@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, DecimalException
 
-from .accounts import (
+from bank.models.accounts import (
     AccountStatus,
     BankAccount,
     Currency,
@@ -14,11 +14,11 @@ from .accounts import (
     PremiumAccount,
     SavingsAccount,
 )
-from .clients import Client, ClientStatus
-from .audit import AuditLevel, AuditLog
-from .audit_reports import AuditReports
-from .balance_history import BalancePoint
-from .exceptions import (
+from bank.models.clients import Client, ClientStatus
+from bank.monitoring.audit import AuditLevel, AuditLog
+from bank.reporting.audit_reports import AuditReports
+from bank.models.balance_history import BalancePoint
+from bank.exceptions import (
     AuditWriteError,
     BankError,
     AuthenticationError,
@@ -26,10 +26,10 @@ from .exceptions import (
     HighRiskTransactionError,
     InvalidOperationError,
 )
-from .transaction_processor import TransactionErrorRecord, TransactionProcessor
-from .risk import RiskAnalyzer, RiskAssessment, RiskLevel
-from .transaction_queue import TransactionQueue
-from .transactions import ExternalRecipient, Transaction, TransactionType
+from bank.processing.processor import TransactionErrorRecord, TransactionProcessor
+from bank.monitoring.risk import RiskAnalyzer, RiskAssessment, RiskLevel
+from bank.processing.queue import TransactionQueue
+from bank.models.transactions import ExternalRecipient, Transaction, TransactionType
 
 
 class Bank:
