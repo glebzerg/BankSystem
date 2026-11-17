@@ -7,6 +7,7 @@ from bank.accounts import Currency
 from bank.bank import Bank
 from bank.clients import Client
 from bank.exceptions import TemporaryTransactionError
+from bank.risk import RiskAnalyzer
 from bank.transactions import ExternalRecipient, Transaction, TransactionType
 
 
@@ -23,6 +24,8 @@ def main() -> None:
 
     bank = Bank(
         now=lambda: current_time,
+        # Day4 проверяет пакетную обработку: для этого сценария допускаем до 9 операций в минуту.
+        risk_analyzer=RiskAnalyzer(frequency_limit=10),
         exchange_rates={(Currency.RUB, Currency.USD): Decimal("0.01")},
         external_preflight=check_external_bank,
     )

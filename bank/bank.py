@@ -18,9 +18,11 @@ from .audit import AuditLevel, AuditLog
 from .exceptions import (
     AuthenticationError,
     ClientBlockedError,
+    HighRiskTransactionError,
     InvalidOperationError,
 )
 from .transaction_processor import TransactionProcessor
+from .risk import RiskAnalyzer, RiskAssessment, RiskLevel
 from .transaction_queue import TransactionQueue
 from .transactions import ExternalRecipient, Transaction, TransactionType
 
@@ -38,13 +40,18 @@ class Bank:
         exchange_rates: Mapping[tuple[Currency, Currency], Decimal] | None = None,
         external_preflight: Callable[[Transaction], None] | None = None,
         audit_log: AuditLog | None = None,
+        risk_analyzer: RiskAnalyzer | None = None,
     ):
         if now is not None and not callable(now):
             raise InvalidOperationError("Источник времени должен быть вызываемым объектом")
         if audit_log is not None and not isinstance(audit_log, AuditLog):
             raise InvalidOperationError("Ожидается журнал AuditLog")
+        if risk_analyzer is not None and not isinstance(risk_analyzer, RiskAnalyzer):
+            raise InvalidOperationError("Ожидается анализатор RiskAnalyzer")
         self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
         self._audit_log = audit_log if audit_log is not None else AuditLog(now=self._get_current_time)
+        self._risk_analyzer = risk_analyzer if risk_analyzer is not None else RiskAnalyzer()
+        self._transaction_risks: dict[str, RiskAssessment] = {}
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
@@ -66,6 +73,7 @@ class Bank:
             exchange_rates=exchange_rates,
             external_preflight=external_preflight,
             before_execute=self._validate_transaction_execution,
+            on_completed=self._record_completed_transfer,
         )
 
     @staticmethod
@@ -473,6 +481,50 @@ class Bank:
             participant = self._get_client(self._account_owners[account_id])
             if participant.status is ClientStatus.BLOCKED:
                 raise ClientBlockedError("Клиент — участник операции заблокирован")
+        self._assess_transaction_risk(transaction, owner_id)
+
+    @staticmethod
+    def _transfer_recipient(transaction: Transaction) -> str | ExternalRecipient | None:
+        if transaction.transaction_type is TransactionType.INTERNAL_TRANSFER:
+            return transaction.recipient_account_id
+        if transaction.transaction_type is TransactionType.EXTERNAL_TRANSFER:
+            return transaction.external_recipient
+        return None
+
+    def _assess_transaction_risk(self, transaction: Transaction, owner_id: str) -> None:
+        """Оценить текущую попытку до списания; высокий риск — окончательный отказ."""
+        current = self._get_current_time()
+        result = self._risk_analyzer.analyze(
+            transaction.amount, transaction.currency, occurred_at=current,
+            client_id=owner_id, operation_id=transaction.transaction_id,
+            recipient=self._transfer_recipient(transaction),
+        )
+        self._risk_analyzer.record_attempt(
+            owner_id, transaction.transaction_id, occurred_at=current,
+        )
+        self._transaction_risks[transaction.transaction_id] = result
+        description = (
+            f"Уровень риска: {result.level.value}; баллы: {result.score}; "
+            f"причины: {', '.join(result.reasons) or 'нет'}"
+        )
+        blocked = result.level is RiskLevel.HIGH
+        level = AuditLevel.ERROR if blocked else (
+            AuditLevel.WARNING if result.level is RiskLevel.MEDIUM else AuditLevel.INFO
+        )
+        self._audit_log.add(
+            level, "risk_blocked" if blocked else "risk_assessed", description,
+            client_id=owner_id, transaction_id=transaction.transaction_id, occurred_at=current,
+        )
+        if blocked:
+            raise HighRiskTransactionError(f"Операция отклонена из-за высокого риска. {description}")
+
+    def _record_completed_transfer(self, transaction: Transaction) -> None:
+        """Вызывается процессором только после успешного завершения операции."""
+        recipient = self._transfer_recipient(transaction)
+        if recipient is not None:
+            self._risk_analyzer.record_successful_transfer(
+                self._transaction_owners[transaction.transaction_id], recipient,
+            )
 
     def process_transactions(self) -> int:
         """Служебный запуск банка: обработать готовые операции всех клиентов.
@@ -532,9 +584,9 @@ class Bank:
             if self._transaction_owners.get(record.transaction_id) == client.client_id
         ]
 
-    @staticmethod
-    def _transaction_info(transaction: Transaction) -> dict:
+    def _transaction_info(self, transaction: Transaction) -> dict:
         external = transaction.external_recipient
+        risk = self._transaction_risks.get(transaction.transaction_id)
         return {
             "transaction_id": transaction.transaction_id,
             "transaction_type": transaction.transaction_type.value,
@@ -557,6 +609,9 @@ class Bank:
             "created_at": transaction.created_at,
             "updated_at": transaction.updated_at,
             "completed_at": transaction.completed_at,
+            "risk": None if risk is None else {
+                "level": risk.level.value, "score": risk.score, "reasons": risk.reasons,
+            },
         }
 
     def deposit(self, session_token: str, account_id: str, amount: Decimal) -> None:

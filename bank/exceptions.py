@@ -26,6 +26,10 @@ class TemporaryTransactionError(BankError):
     """Временный сбой до списания денег, допускающий повторную попытку."""
 
 
+class HighRiskTransactionError(BankError):
+    """Операция отклонена до списания из-за высокого риска; повтор запрещён."""
+
+
 class AuthenticationError(BankError):
     """Ошибка проверки учётных данных или сессии."""
 

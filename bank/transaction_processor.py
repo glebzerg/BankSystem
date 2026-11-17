@@ -41,6 +41,7 @@ class TransactionProcessor:
         retry_delay: timedelta = timedelta(seconds=60),
         external_preflight: Callable[[Transaction], None] | None = None,
         before_execute: Callable[[Transaction], None] | None = None,
+        on_completed: Callable[[Transaction], None] | None = None,
     ):
         if not isinstance(queue, TransactionQueue):
             raise InvalidOperationError("Ожидается очередь TransactionQueue")
@@ -54,6 +55,8 @@ class TransactionProcessor:
             raise InvalidOperationError("Проверка внешнего банка должна быть вызываемым объектом")
         if before_execute is not None and not callable(before_execute):
             raise InvalidOperationError("Проверка операции должна быть вызываемым объектом")
+        if on_completed is not None and not callable(on_completed):
+            raise InvalidOperationError("Обработчик успеха должен быть вызываемым объектом")
         if (
             not isinstance(external_fee_rate, Decimal)
             or not external_fee_rate.is_finite()
@@ -81,6 +84,7 @@ class TransactionProcessor:
         # или менять балансы. TemporaryTransactionError гарантирует отсутствие списания.
         self._external_preflight = external_preflight
         self._before_execute = before_execute
+        self._on_completed = on_completed
         self._errors: list[TransactionErrorRecord] = []
 
     @property
@@ -124,6 +128,9 @@ class TransactionProcessor:
             self._record_error(transaction, error, message, occurred_at)
         else:
             transaction.mark_completed()
+            # Уведомление после успеха не должно повторять уже выполненный перевод.
+            if self._on_completed is not None:
+                self._on_completed(transaction)
         return transaction
 
     def _record_error(

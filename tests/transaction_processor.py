@@ -230,10 +230,45 @@ class TransactionProcessorTests(unittest.TestCase):
             {"max_attempts": 0}, {"max_attempts": True},
             {"retry_delay": timedelta(0)}, {"retry_delay": 60},
             {"external_preflight": "not callable"},
+            {"on_completed": "not callable"},
         ):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(InvalidOperationError):
                     TransactionProcessor(self.queue, self.accounts, **kwargs)
+
+    def test_completion_callback_runs_only_after_success(self):
+        completed = []
+
+        def remember(transaction):
+            self.assertIs(transaction.status, TransactionStatus.COMPLETED)
+            completed.append(transaction)
+
+        def unavailable(transaction):
+            raise TemporaryTransactionError("Нет связи")
+
+        processor = TransactionProcessor(self.queue, self.accounts,
+                                         on_completed=remember, external_preflight=unavailable)
+        failed = self.operation(amount="3000")
+        retrying = self.operation(TransactionType.EXTERNAL_TRANSFER)
+        success = self.operation()
+        processor.process_all()
+        self.assertIs(failed.status, TransactionStatus.FAILED)
+        self.assertIs(retrying.status, TransactionStatus.QUEUED)
+        self.assertEqual(completed, [success])
+
+    def test_completion_callback_error_does_not_retry_completed_transfer(self):
+        def broken_callback(transaction):
+            raise TemporaryTransactionError("Ошибка обработчика после списания")
+
+        processor = TransactionProcessor(self.queue, self.accounts, on_completed=broken_callback)
+        transaction = self.operation()
+        with self.assertRaises(TemporaryTransactionError):
+            processor.process_next()
+        self.assertIs(transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(self.sender.balance, Decimal("1900"))
+        self.now += timedelta(minutes=1)
+        self.assertEqual(processor.process_all(), [])
+        self.assertEqual(transaction.attempts_count, 1)
 
     def test_no_retry_when_max_attempts_is_one(self):
         def unavailable(transaction):
