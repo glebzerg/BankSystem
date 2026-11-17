@@ -1,15 +1,19 @@
 """Диаграммы по готовым снимкам отчётов без GUI и глобального состояния pyplot."""
 
 import math
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from textwrap import fill
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
 from matplotlib.ticker import MaxNLocator
 
-from .exceptions import InvalidOperationError
+from .exceptions import InvalidOperationError, ReportExportError
 
 
 _STATUSES = {
@@ -109,12 +113,46 @@ def _risk_bars(report):
     return figure
 
 
-def build_charts(report: dict) -> dict[str, Figure]:
+def _balance_timeline(report, account):
+    points = [point for point in report["balance_history"] if point["account_id"] == account["account_id"]]
+    timezone = report["generated_at"].tzinfo
+    for point in points:
+        time = point["occurred_at"]
+        if not isinstance(time, datetime) or time.tzinfo is None or time.utcoffset() is None:
+            raise InvalidOperationError("Время истории баланса должно содержать часовой пояс")
+        if point["currency"] != account["currency"]:
+            raise InvalidOperationError("Валюта истории не совпадает с валютой счёта")
+    # Сортировка стабильная: изменения с одинаковым временем сохраняют исходный порядок.
+    points = sorted(points, key=lambda point: point["occurred_at"])
+    times = [point["occurred_at"].astimezone(timezone) for point in points]
+    amounts = [_amount(point["balance"]) for point in points]
+    figure, axes = _figure(f"Движение баланса — счёт {account['account_id']}", report)
+    if not points:
+        _empty(axes, "Нет истории баланса")
+        return figure
+    axes.step(times, amounts, where="post", marker="o", color="#5086ca", linewidth=2)
+    if min(amounts) < 0:
+        axes.axhline(0, color="#8795a8", linewidth=1)
+    locator = AutoDateLocator(tz=timezone, minticks=3, maxticks=7)
+    axes.xaxis.set_major_locator(locator)
+    axes.xaxis.set_major_formatter(ConciseDateFormatter(locator, tz=timezone))
+    axes.set_xlabel(f"Время ({report['generated_at'].tzname()})")
+    axes.set_ylabel(f"Свободный баланс, {account['currency']}")
+    axes.ticklabel_format(axis="y", style="plain", useOffset=False)
+    axes.grid(alpha=0.2)
+    if times[0] == times[-1]:
+        axes.set_xlim(times[0] - timedelta(minutes=1), times[-1] + timedelta(minutes=1))
+    return figure
+
+
+def build_charts(report: dict, *, account_id: str | None = None) -> dict[str, Figure]:
     """Создать фигуры без окон. Снимок не изменяется и банк не читается.
 
     Клиент: статусы и свободные балансы счетов. Банк: статусы и суммы клиентов
     с портфелями. Риски: распределение максимальных уровней за период.
-    Каждая валюта получает свою диаграмму. Возвращённые фигуры принадлежат
+    Клиентский отчёт также содержит линию баланса для каждого счёта; account_id
+    ограничивает только эти линии выбранным счётом. Для других типов отчётов
+    account_id не допускается. Каждая валюта получает свою диаграмму. Фигуры принадлежат
     вызывающему коду; после использования их можно освободить через clear().
     """
     if not isinstance(report, dict) or report.get("report_type") not in ("client", "bank", "risk"):
@@ -124,6 +162,11 @@ def build_charts(report: dict) -> dict[str, Figure]:
         raise InvalidOperationError("Дата отчёта должна содержать часовой пояс")
     charts = {}
     try:
+        if account_id is not None:
+            if report["report_type"] != "client" or not isinstance(account_id, str) or not account_id.strip():
+                raise InvalidOperationError("Выбор счёта разрешён только для клиентского отчёта")
+            if not any(row["account_id"] == account_id for row in report.get("accounts", [])):
+                raise InvalidOperationError("Счёт отсутствует в снимке отчёта")
         if report["report_type"] == "risk":
             charts["risk_distribution"] = _risk_bars(report)
             return charts
@@ -143,6 +186,14 @@ def build_charts(report: dict) -> dict[str, Figure]:
             charts[f"{name}_{currency}"] = _balance_bars(report, labels, amounts, title, currency)
         if not currencies:
             charts["balances"] = _balance_bars(report, [], [], "Балансы", "")
+        if report["report_type"] == "client":
+            accounts = [row for row in report["accounts"] if account_id is None or row["account_id"] == account_id]
+            for account in accounts:
+                charts[f"balance_history_{account['account_id']}"] = _balance_timeline(report, account)
+            if not accounts:
+                figure, axes = _figure("Движение баланса", report)
+                _empty(axes, "Нет счетов для истории баланса")
+                charts["balance_history"] = figure
         return charts
     except (KeyError, TypeError, ValueError, AttributeError, InvalidOperationError) as error:
         for figure in charts.values():
@@ -150,3 +201,49 @@ def build_charts(report: dict) -> dict[str, Figure]:
         if isinstance(error, InvalidOperationError):
             raise
         raise InvalidOperationError("Некорректная структура снимка отчёта") from error
+
+
+def _save_png(figure: Figure, path: Path, dpi: int) -> None:
+    temporary = None
+    try:
+        with NamedTemporaryFile(mode="wb", dir=path.parent, prefix=".chart-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            figure.savefig(stream, format="png", dpi=dpi)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def save_charts(
+    report: dict, directory: str | Path, *, account_id: str | None = None, dpi: int = 150,
+) -> list[Path]:
+    """Сохранить все диаграммы снимка в PNG и освободить фигуры даже при ошибке.
+
+    Папка создаётся автоматически. Повторный экспорт заменяет файлы; замена
+    атомарна для каждого файла отдельно. Разным отчётам нужны разные папки.
+    """
+    if not isinstance(directory, (str, Path)) or (isinstance(directory, str) and not directory.strip()):
+        raise InvalidOperationError("Путь должен быть непустой строкой или Path")
+    if type(dpi) is not int or dpi <= 0:
+        raise InvalidOperationError("DPI должен быть целым числом > 0")
+    folder = Path(directory)
+    charts = build_charts(report, account_id=account_id)
+    try:
+        if any(re.fullmatch(r"[A-Za-z0-9_-]+", name) is None for name in charts):
+            raise InvalidOperationError("Недопустимое имя файла диаграммы")
+        folder.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for name, figure in charts.items():
+            path = folder / f"{name}.png"
+            _save_png(figure, path, dpi)
+            paths.append(path)
+        return paths
+    except (OSError, ValueError) as error:
+        raise ReportExportError(f"Не удалось сохранить диаграммы: {folder}") from error
+    finally:
+        for figure in charts.values():
+            figure.clear()

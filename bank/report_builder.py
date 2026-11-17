@@ -46,11 +46,20 @@ class ReportBuilder:
         return export_to_csv(report, directory)
 
     @staticmethod
-    def build_charts(report: dict) -> dict:
+    def build_charts(report: dict, *, account_id: str | None = None) -> dict:
         """Построить диаграммы снимка; matplotlib нужен только при вызове этого метода."""
         from .report_charts import build_charts
 
-        return build_charts(report)
+        return build_charts(report, account_id=account_id)
+
+    @staticmethod
+    def save_charts(
+        report: dict, directory: str | Path, *, account_id: str | None = None, dpi: int = 150,
+    ) -> list[Path]:
+        """Сохранить PNG по снимку отчёта и освободить созданные фигуры."""
+        from .report_charts import save_charts
+
+        return save_charts(report, directory, account_id=account_id, dpi=dpi)
 
     @staticmethod
     def _build_summary(accounts: list[dict], transactions: list[dict]) -> dict:
