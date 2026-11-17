@@ -1,14 +1,16 @@
-"""Подготовка снимков отчётов и их текстовое представление."""
+"""Подготовка снимков отчётов, текстовое представление и экспорт."""
 
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from .accounts import Currency
 from .bank import Bank
 from .exceptions import InvalidOperationError
 from .transactions import TransactionStatus
 from .report_text import format_text
+from .report_export import export_to_csv, export_to_json
 
 
 class ReportBuilder:
@@ -32,6 +34,16 @@ class ReportBuilder:
     def to_text(report: dict) -> str:
         """Текст готового отчёта без повторного чтения или изменения банка."""
         return format_text(report)
+
+    @staticmethod
+    def export_to_json(report: dict, file_path: str | Path) -> Path:
+        """Сохранить весь снимок в JSON без потери точности денежных значений."""
+        return export_to_json(report, file_path)
+
+    @staticmethod
+    def export_to_csv(report: dict, directory: str | Path) -> list[Path]:
+        """Сохранить разделы снимка в отдельные CSV-таблицы."""
+        return export_to_csv(report, directory)
 
     @staticmethod
     def _build_summary(accounts: list[dict], transactions: list[dict]) -> dict:

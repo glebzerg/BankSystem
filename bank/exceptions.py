@@ -6,6 +6,10 @@ class AuditWriteError(BankError):
     """Не удалось сохранить событие аудита в файл."""
 
 
+class ReportExportError(BankError):
+    """Не удалось сохранить файл отчёта."""
+
+
 class AccountFrozenError(BankError):
     """Операция над замороженным счётом."""
 
