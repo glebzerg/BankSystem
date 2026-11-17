@@ -257,6 +257,15 @@ class Bank:
         account = self._get_owned_account(session_token, account_id)
         return tuple(self._balance_history[account.account_id])
 
+    def get_client_info(self, session_token: str) -> dict:
+        """Сведения о текущем клиенте для отчёта без учётных данных."""
+        client = self._get_authenticated_client(session_token)
+        return {
+            "client_id": client.client_id,
+            "full_name": client.full_name,
+            "status": client.status.value,
+        }
+
     def search_accounts(
         self,
         session_token: str,
