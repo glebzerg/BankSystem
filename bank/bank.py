@@ -17,6 +17,7 @@ from .accounts import (
 from .clients import Client, ClientStatus
 from .audit import AuditLevel, AuditLog
 from .audit_reports import AuditReports
+from .balance_history import BalancePoint
 from .exceptions import (
     AuditWriteError,
     BankError,
@@ -60,6 +61,7 @@ class Bank:
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
+        self._balance_history: dict[str, list[BalancePoint]] = {}
 
         # ID клиента → (соль, хеш пароля).
         self._credentials: dict[str, tuple[bytes, bytes]] = {}
@@ -232,7 +234,28 @@ class Bank:
         client._add_account(account.account_id)
         self._accounts[account.account_id] = account
         self._account_owners[account.account_id] = client.client_id
+        self._record_balance(account, "account_opened")
         return account.get_account_info()
+
+    def _record_balance(
+        self, account: BankAccount, operation_type: str, operation_id: str | None = None,
+        *, occurred_at: datetime | None = None,
+    ) -> None:
+        """Сохранить фактический баланс; неизменившийся остаток не добавляет точку."""
+        history = self._balance_history.setdefault(account.account_id, [])
+        if history and history[-1].balance == account.balance:
+            return
+        history.append(BalancePoint(
+            account_id=account.account_id,
+            occurred_at=occurred_at if occurred_at is not None else self._get_current_time(),
+            balance=account.balance, currency=account.currency,
+            operation_type=operation_type, operation_id=operation_id,
+        ))
+
+    def get_balance_history(self, session_token: str, account_id: str) -> tuple[BalancePoint, ...]:
+        """Снимок истории своего счёта с открытия; портфель инвестиций сюда не входит."""
+        account = self._get_owned_account(session_token, account_id)
+        return tuple(self._balance_history[account.account_id])
 
     def search_accounts(
         self,
@@ -536,6 +559,13 @@ class Bank:
 
     def _record_completed_transaction(self, transaction: Transaction) -> None:
         """Вызывается процессором только после успешного завершения операции."""
+        current = self._get_current_time()
+        for account_id in (transaction.sender_account_id, transaction.recipient_account_id):
+            if account_id is not None:
+                self._record_balance(
+                    self._accounts[account_id], transaction.transaction_type.value,
+                    transaction.transaction_id, occurred_at=current,
+                )
         recipient = self._transfer_recipient(transaction)
         if recipient is not None:
             self._risk_analyzer.record_successful_transfer(
@@ -545,7 +575,7 @@ class Bank:
             AuditLevel.INFO, "transaction_completed",
             f"Операция {transaction.transaction_type.value} выполнена; попытка {transaction.attempts_count}",
             client_id=self._transaction_owners[transaction.transaction_id],
-            transaction_id=transaction.transaction_id, occurred_at=self._get_current_time(),
+            transaction_id=transaction.transaction_id, occurred_at=current,
         )
 
     def _record_transaction_error(self, transaction: Transaction, error: TransactionErrorRecord) -> None:
@@ -715,6 +745,7 @@ class Bank:
             )
             raise
         else:
+            self._record_balance(account, operation_type, operation_id)
             # Вне обработчика ошибок операции: сбой записи не отменяет успех.
             self._audit_log.add(
                 AuditLevel.INFO, "operation_completed", details,
