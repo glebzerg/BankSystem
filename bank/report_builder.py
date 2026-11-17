@@ -27,6 +27,32 @@ class ReportBuilder:
             raise InvalidOperationError("Время отчёта должно содержать часовой пояс")
         return current.astimezone(Bank.BANK_TIMEZONE)
 
+    @staticmethod
+    def _build_summary(accounts: list[dict], transactions: list[dict]) -> dict:
+        """Денежные итоги по валютам; комиссии только успешных поручений очереди."""
+        balances = {currency.value: Decimal("0") for currency in Currency}
+        totals = balances.copy()
+        fees = balances.copy()
+        statuses = {status.value: 0 for status in TransactionStatus}
+        for account in accounts:
+            if account["status"] == "closed":
+                continue
+            currency = account["currency"]
+            balances[currency] += account["balance"]
+            totals[currency] += account["balance"] + sum(account.get("portfolio", {}).values(), Decimal("0"))
+        for transaction in transactions:
+            statuses[transaction["status"]] += 1
+            if transaction["status"] == TransactionStatus.COMPLETED.value:
+                fees[transaction["currency"]] += transaction["fee"] or Decimal("0")
+        return {
+            "account_count": len(accounts),
+            "transaction_count": len(transactions),
+            "transactions_by_status": statuses,
+            "balances_by_currency": balances,
+            "total_by_currency": totals,
+            "fees_by_currency": fees,
+        }
+
     def build_client_report(self, session_token: str) -> dict:
         """Отчёт своего клиента за всю историю, доступную в памяти банка.
 
@@ -40,18 +66,6 @@ class ReportBuilder:
         generated_at = self._get_report_time()
         accounts = self._bank.search_accounts(session_token)
         transactions = self._bank.get_transactions(session_token)
-        balances = {currency.value: Decimal("0") for currency in Currency}
-        totals = balances.copy()
-        statuses = {status.value: 0 for status in TransactionStatus}
-        for account in accounts:
-            if account["status"] == "closed":
-                continue
-            currency = account["currency"]
-            balances[currency] += account["balance"]
-            totals[currency] += account["balance"] + sum(account.get("portfolio", {}).values(), Decimal("0"))
-        for transaction in transactions:
-            statuses[transaction["status"]] += 1
-
         history = []
         for account in accounts:
             for point in self._bank.get_balance_history(session_token, account["account_id"]):
@@ -67,14 +81,48 @@ class ReportBuilder:
             "report_type": "client",
             "generated_at": generated_at,
             "client": client,
-            "summary": {
-                "account_count": len(accounts),
-                "transaction_count": len(transactions),
-                "transactions_by_status": statuses,
-                "balances_by_currency": balances,
-                "total_by_currency": totals,
-            },
+            "summary": self._build_summary(accounts, transactions),
             "accounts": accounts,
             "transactions": transactions,
             "balance_history": history,
+        }
+
+    def build_bank_report(self) -> dict:
+        """Служебный отчёт всего банка; суммы и рейтинги разных валют не смешиваются."""
+        generated_at = self._get_report_time()
+        snapshot = self._bank.get_bank_snapshot()
+        summary = self._build_summary(snapshot["accounts"], snapshot["transactions"])
+        summary["client_count"] = snapshot["client_count"]
+        rankings = snapshot["client_balances_by_currency"]
+        return {
+            "report_type": "bank",
+            "generated_at": generated_at,
+            "summary": summary,
+            "accounts": snapshot["accounts"],
+            "transactions": snapshot["transactions"],
+            "client_balances_by_currency": rankings,
+            "top_three_by_currency": {
+                currency: [row.copy() for row in rows[:3]] for currency, rows in rankings.items()
+            },
+        }
+
+    def build_risk_report(
+        self, session_token: str, *, start_at: datetime | None = None, end_at: datetime | None = None,
+    ) -> dict:
+        """Профиль, подозрительные операции и ошибки своего клиента за период.
+
+        Расчёты выполняются готовыми методами Day5. В отчёте нет данных
+        других клиентов; правила периода и учёта повторов сохранены.
+        """
+        client = self._bank.get_client_info(session_token)
+        generated_at = self._get_report_time()
+        period = {"start_at": start_at, "end_at": end_at}
+        return {
+            "report_type": "risk",
+            "generated_at": generated_at,
+            "client": client,
+            "period": period,
+            "summary": self._bank.get_client_risk_profile(session_token, **period),
+            "suspicious_operations": self._bank.get_suspicious_operations(session_token, **period),
+            "error_statistics": self._bank.get_error_statistics(session_token, **period),
         }

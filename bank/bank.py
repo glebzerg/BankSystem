@@ -357,6 +357,20 @@ class Bank:
             key=lambda item: (-item["total_balance"], item["client_id"]),
         )
 
+    def get_bank_snapshot(self) -> dict:
+        """Служебный снимок для управляющего кода, как общий баланс и рейтинг.
+
+        Не является клиентским API. Учётные данные и токены не возвращаются.
+        """
+        return {
+            "client_count": len(self._clients),
+            "accounts": [account.get_account_info() for account in self._accounts.values()],
+            "transactions": [self._transaction_info(transaction) for transaction in self._transactions.values()],
+            "client_balances_by_currency": {
+                currency.value: self.get_clients_ranking(currency) for currency in Currency
+            },
+        }
+
     def _get_owned_account(
         self, session_token: str, account_id: str,
     ) -> BankAccount:
