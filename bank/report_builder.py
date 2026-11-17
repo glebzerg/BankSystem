@@ -46,6 +46,13 @@ class ReportBuilder:
         return export_to_csv(report, directory)
 
     @staticmethod
+    def build_charts(report: dict) -> dict:
+        """Построить диаграммы снимка; matplotlib нужен только при вызове этого метода."""
+        from .report_charts import build_charts
+
+        return build_charts(report)
+
+    @staticmethod
     def _build_summary(accounts: list[dict], transactions: list[dict]) -> dict:
         """Денежные итоги по валютам; комиссии только успешных поручений очереди."""
         balances = {currency.value: Decimal("0") for currency in Currency}
