@@ -1,4 +1,4 @@
-"""Подготовка данных отчётов; форматирование и экспорт добавляются отдельно."""
+"""Подготовка снимков отчётов и их текстовое представление."""
 
 from collections.abc import Callable
 from datetime import datetime
@@ -8,6 +8,7 @@ from .accounts import Currency
 from .bank import Bank
 from .exceptions import InvalidOperationError
 from .transactions import TransactionStatus
+from .report_text import format_text
 
 
 class ReportBuilder:
@@ -26,6 +27,11 @@ class ReportBuilder:
         if not isinstance(current, datetime) or current.tzinfo is None or current.utcoffset() is None:
             raise InvalidOperationError("Время отчёта должно содержать часовой пояс")
         return current.astimezone(Bank.BANK_TIMEZONE)
+
+    @staticmethod
+    def to_text(report: dict) -> str:
+        """Текст готового отчёта без повторного чтения или изменения банка."""
+        return format_text(report)
 
     @staticmethod
     def _build_summary(accounts: list[dict], transactions: list[dict]) -> dict:
