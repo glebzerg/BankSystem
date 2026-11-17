@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 
 from .exceptions import AuditWriteError, InvalidOperationError
+from .risk import RiskAssessment
 
 
 def _validate_time(value: datetime) -> None:
@@ -38,9 +39,12 @@ class AuditRecord:
     description: str
     client_id: str | None = None
     transaction_id: str | None = None
+    risk: RiskAssessment | None = None
 
     def __post_init__(self) -> None:
         _validate_time(self.occurred_at)
+        if self.risk is not None and not isinstance(self.risk, RiskAssessment):
+            raise InvalidOperationError("Оценка риска должна быть RiskAssessment или None")
         if not isinstance(self.level, AuditLevel):
             raise InvalidOperationError("Важность должна быть элементом AuditLevel")
         for label, value in (
@@ -86,6 +90,7 @@ class AuditLog:
         client_id: str | None = None,
         transaction_id: str | None = None,
         occurred_at: datetime | None = None,
+        risk: RiskAssessment | None = None,
     ) -> AuditRecord:
         """Создать и сохранить запись; некорректные данные не меняют журнал."""
         record = AuditRecord(
@@ -95,6 +100,7 @@ class AuditLog:
             description=description,
             client_id=client_id,
             transaction_id=transaction_id,
+            risk=risk,
         )
         if self._file_path is not None:
             self._append_to_file(record)
@@ -115,6 +121,12 @@ class AuditLog:
             "client_id": record.client_id,
             "transaction_id": record.transaction_id,
         }
+        if record.risk is not None:
+            data["risk"] = {
+                "level": record.risk.level.value,
+                "score": record.risk.score,
+                "reasons": record.risk.reasons,
+            }
         try:
             line = json.dumps(data, ensure_ascii=False) + "\n"
             with self._file_path.open("a", encoding="utf-8") as stream:

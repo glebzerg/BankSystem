@@ -40,6 +40,16 @@ class RiskAssessment:
     score: int
     reasons: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.level, RiskLevel):
+            raise InvalidOperationError("Уровень риска должен быть элементом RiskLevel")
+        if type(self.score) is not int or self.score < 0:
+            raise InvalidOperationError("Баллы риска должны быть целым числом >= 0")
+        if not isinstance(self.reasons, tuple) or any(
+            not isinstance(reason, str) or not reason.strip() for reason in self.reasons
+        ):
+            raise InvalidOperationError("Причины риска должны быть кортежем непустых строк")
+
 
 class RiskAnalyzer:
     """Суммирует баллы признаков и определяет уровень риска.

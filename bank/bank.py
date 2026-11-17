@@ -16,6 +16,7 @@ from .accounts import (
 )
 from .clients import Client, ClientStatus
 from .audit import AuditLevel, AuditLog
+from .audit_reports import AuditReports
 from .exceptions import (
     AuditWriteError,
     BankError,
@@ -53,6 +54,7 @@ class Bank:
             raise InvalidOperationError("Ожидается анализатор RiskAnalyzer")
         self._now = now if now is not None else lambda: datetime.now(self.BANK_TIMEZONE)
         self._audit_log = audit_log if audit_log is not None else AuditLog(now=self._get_current_time)
+        self._audit_reports = AuditReports(self._audit_log)
         self._risk_analyzer = risk_analyzer if risk_analyzer is not None else RiskAnalyzer()
         self._operation_risks: dict[str, RiskAssessment] = {}
         self._clients: dict[str, Client] = {}
@@ -527,6 +529,7 @@ class Bank:
         self._audit_log.add(
             level, "risk_blocked" if blocked else "risk_assessed", description,
             client_id=owner_id, transaction_id=operation_id, occurred_at=current,
+            risk=result,
         )
         if blocked:
             raise HighRiskTransactionError(f"Операция отклонена из-за высокого риска. {description}")
@@ -622,6 +625,24 @@ class Bank:
             for record in self._transaction_processor.errors
             if self._transaction_owners.get(record.transaction_id) == client.client_id
         ]
+
+    def get_suspicious_operations(
+        self, session_token: str, *, start_at: datetime | None = None, end_at: datetime | None = None,
+    ) -> list[dict]:
+        """Подозрительные операции только текущего клиента за выбранный период."""
+        client = self._get_authenticated_client(session_token)
+        return self._audit_reports.suspicious_operations(
+            client.client_id, start_at=start_at, end_at=end_at,
+        )
+
+    def get_client_risk_profile(
+        self, session_token: str, *, start_at: datetime | None = None, end_at: datetime | None = None,
+    ) -> dict:
+        """Риск-профиль только текущего клиента по оценённым операциям."""
+        client = self._get_authenticated_client(session_token)
+        return self._audit_reports.client_risk_profile(
+            client.client_id, start_at=start_at, end_at=end_at,
+        )
 
     def _transaction_info(self, transaction: Transaction) -> dict:
         external = transaction.external_recipient
